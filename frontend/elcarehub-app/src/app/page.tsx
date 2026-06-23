@@ -127,7 +127,7 @@ export default function HomePage() {
           {/* Badge */}
           <div className={`mb-6 inline-flex items-center gap-2 rounded-full border border-brand-500/40 bg-brand-500/10 backdrop-blur-sm px-4 py-1.5 text-xs font-semibold tracking-widest text-brand-300 uppercase transition-all duration-700 ${heroLoaded ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`}>
             <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />
-            Africa's Cultural Marketplace on Stellar
+            Africa&apos;s Cultural Marketplace on Stellar
           </div>
 
           {/* Main Heading */}
