@@ -1,4 +1,4 @@
-// ─────────────────────────────────────────────────────────────
+﻿// ─────────────────────────────────────────────────────────────
 // components/Navbar.tsx — ELCARE-HUB Navigation (Redesigned)
 // ─────────────────────────────────────────────────────────────
 
@@ -18,7 +18,7 @@ export function Navbar() {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const shortKey = publicKey
-    ? `${publicKey.slice(0, 4)}…${publicKey.slice(-4)}`
+    ? `${publicKey.slice(0, 4)}-${publicKey.slice(-4)}`
     : null;
 
   // Detect scroll for transparent → solid transition

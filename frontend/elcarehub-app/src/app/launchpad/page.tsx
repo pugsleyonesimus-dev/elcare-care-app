@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Navbar } from "@/components/Navbar";
 import { useLaunchpadCollections } from "@/hooks/useLaunchpad";
 import { useWalletContext } from "@/context/WalletContext";
 import { useLaunchpadAdminCheck } from "@/hooks/useLaunchpadAdmin";
@@ -19,8 +18,6 @@ export default function LaunchpadPage() {
 
   return (
     <main className="min-h-screen bg-brand-50/20">
-      <Navbar />
-
       <div className="pt-24 pb-12">
         {/* Hero Section */}
         <section className="relative overflow-hidden bg-gradient-to-br from-brand-500 via-terracotta-500 to-mint-500 text-white">

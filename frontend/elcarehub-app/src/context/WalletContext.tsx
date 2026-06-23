@@ -1,10 +1,11 @@
 "use client";
 
-import { createContext, useContext, ReactNode, useMemo } from "react";
+import { createContext, useContext, ReactNode, useMemo, useCallback } from "react";
 import { useWallet, WalletState, WalletStatus } from "@/hooks/useWallet";
-import { useMagicWallet, MagicWalletState, MagicWalletStatus } from "@/hooks/useMagicWallet";
+import { useMagicWallet, MagicWalletState } from "@/hooks/useMagicWallet";
+import { useLobstrWallet } from "@/hooks/useLobstrWallet";
 
-export type WalletType = "freighter" | "magic" | null;
+export type WalletType = "freighter" | "lobstr" | "magic" | null;
 
 export interface UnifiedWalletState {
   walletType: WalletType;
@@ -20,45 +21,95 @@ export interface UnifiedWalletState {
   disconnect: () => void;
   refresh: () => Promise<void>;
   freighter: WalletState;
+  lobstr: WalletState;
   magic: MagicWalletState;
+  // Per-wallet connect helpers for the modal
+  connectFreighter: () => Promise<void>;
+  connectLobstr: () => Promise<void>;
 }
 
 const WalletContext = createContext<UnifiedWalletState | null>(null);
 
 export function WalletProvider({ children }: { children: ReactNode }) {
   const freighter = useWallet();
+  const lobstr = useLobstrWallet();
   const magic = useMagicWallet();
 
   const walletType: WalletType = freighter.isConnected
     ? "freighter"
+    : lobstr.isConnected
+    ? "lobstr"
     : magic.isConnected
-      ? "magic"
-      : null;
+    ? "magic"
+    : null;
 
-  const publicKey = freighter.publicKey ?? magic.publicAddress ?? null;
+  const activeWallet = freighter.isConnected
+    ? freighter
+    : lobstr.isConnected
+    ? lobstr
+    : null;
 
-  const status: UnifiedWalletState['status'] = freighter.isConnected || (!magic.isConnected && freighter.status !== "DISCONNECTED")
+  const publicKey =
+    activeWallet?.publicKey ?? magic.publicAddress ?? null;
+
+  const status: UnifiedWalletState["status"] = freighter.isConnected
     ? freighter.status
+    : lobstr.isConnected
+    ? lobstr.status
     : magic.isConnected
-      ? "MAGIC_CONNECTED"
-      : "DISCONNECTED";
+    ? "MAGIC_CONNECTED"
+    : "DISCONNECTED";
 
-  const value = useMemo(() => ({
-    walletType,
-    publicKey,
-    isConnected: freighter.isConnected || magic.isConnected,
-    isConnecting: freighter.isConnecting || magic.isConnecting,
-    isWrongNetwork: freighter.isWrongNetwork,
-    networkPassphrase: freighter.networkPassphrase,
-    isInstalled: freighter.isInstalled,
-    error: freighter.error ?? magic.error,
-    status,
-    connect: freighter.connect,
-    disconnect: freighter.disconnect,
-    refresh: freighter.refresh,
-    freighter,
-    magic,
-  }), [walletType, publicKey, status, freighter, magic]);
+  const connect = useCallback(async () => {
+    // Default connect tries Freighter first
+    await freighter.connect();
+  }, [freighter]);
+
+  const disconnect = useCallback(() => {
+    freighter.disconnect();
+    lobstr.disconnect();
+    // Magic logout is async; fire and forget
+    if (magic.isConnected) magic.logout().catch(console.error);
+  }, [freighter, lobstr, magic]);
+
+  const refresh = useCallback(async () => {
+    await Promise.all([freighter.refresh(), lobstr.refresh()]);
+  }, [freighter, lobstr]);
+
+  const value = useMemo(
+    () => ({
+      walletType,
+      publicKey,
+      isConnected: freighter.isConnected || lobstr.isConnected || magic.isConnected,
+      isConnecting:
+        freighter.isConnecting || lobstr.isConnecting || magic.isConnecting,
+      isWrongNetwork: activeWallet?.isWrongNetwork ?? false,
+      networkPassphrase: activeWallet?.networkPassphrase ?? null,
+      isInstalled: freighter.isInstalled || lobstr.isInstalled,
+      error: freighter.error ?? lobstr.error ?? magic.error,
+      status,
+      connect,
+      disconnect,
+      refresh,
+      freighter,
+      lobstr,
+      magic,
+      connectFreighter: freighter.connect,
+      connectLobstr: lobstr.connect,
+    }),
+    [
+      walletType,
+      publicKey,
+      status,
+      activeWallet,
+      freighter,
+      lobstr,
+      magic,
+      connect,
+      disconnect,
+      refresh,
+    ]
+  );
 
   return (
     <WalletContext.Provider value={value}>{children}</WalletContext.Provider>

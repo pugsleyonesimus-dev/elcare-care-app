@@ -1,4 +1,4 @@
-// ─────────────────────────────────────────────────────────────
+﻿// ─────────────────────────────────────────────────────────────
 // app/settings/page.tsx — Settings Page for Wallet/Network Preferences
 // ─────────────────────────────────────────────────────────────
 
@@ -35,12 +35,12 @@ export default function SettingsPage() {
   } = useWalletContext();
 
   // Derive a human-readable network name from the passphrase
-  const network = networkPassphrase?.includes('Test SDF')
-    ? 'testnet'
-    : networkPassphrase?.includes('Public Global')
-      ? 'public'
+  const network = networkPassphrase….includes('Test SDF')
+    … 'testnet'
+    : networkPassphrase….includes('Public Global')
+      … 'public'
       : networkPassphrase
-        ? 'futurenet'
+        … 'futurenet'
         : 'public';
 
   const [settings, setSettings] = useState({
@@ -165,7 +165,7 @@ export default function SettingsPage() {
                     onClick={() => handleNetworkSwitch(net.id)}
                     className={`flex items-center justify-between p-3 rounded-lg border transition-all ${
                       network === net.id
-                        ? 'bg-brand-500/10 border-brand-500/30 text-brand-400'
+                        … 'bg-brand-500/10 border-brand-500/30 text-brand-400'
                         : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'
                     }`}
                   >
@@ -187,12 +187,12 @@ export default function SettingsPage() {
               <button
                 onClick={() => setSettings(prev => ({ ...prev, autoSwitchNetwork: !prev.autoSwitchNetwork }))}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  settings.autoSwitchNetwork ? 'bg-brand-500' : 'bg-gray-600'
+                  settings.autoSwitchNetwork … 'bg-brand-500' : 'bg-gray-600'
                 }`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    settings.autoSwitchNetwork ? 'translate-x-6' : 'translate-x-1'
+                    settings.autoSwitchNetwork … 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
               </button>
@@ -216,12 +216,12 @@ export default function SettingsPage() {
               <button
                 onClick={() => setSettings(prev => ({ ...prev, showBalance: !prev.showBalance }))}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  settings.showBalance ? 'bg-brand-500' : 'bg-gray-600'
+                  settings.showBalance … 'bg-brand-500' : 'bg-gray-600'
                 }`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    settings.showBalance ? 'translate-x-6' : 'translate-x-1'
+                    settings.showBalance … 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
               </button>
@@ -235,12 +235,12 @@ export default function SettingsPage() {
               <button
                 onClick={() => setSettings(prev => ({ ...prev, showTransactionHistory: !prev.showTransactionHistory }))}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  settings.showTransactionHistory ? 'bg-brand-500' : 'bg-gray-600'
+                  settings.showTransactionHistory … 'bg-brand-500' : 'bg-gray-600'
                 }`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    settings.showTransactionHistory ? 'translate-x-6' : 'translate-x-1'
+                    settings.showTransactionHistory … 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
               </button>
@@ -254,12 +254,12 @@ export default function SettingsPage() {
               <button
                 onClick={() => setSettings(prev => ({ ...prev, confirmTransactions: !prev.confirmTransactions }))}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  settings.confirmTransactions ? 'bg-brand-500' : 'bg-gray-600'
+                  settings.confirmTransactions … 'bg-brand-500' : 'bg-gray-600'
                 }`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    settings.confirmTransactions ? 'translate-x-6' : 'translate-x-1'
+                    settings.confirmTransactions … 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
               </button>
@@ -283,12 +283,12 @@ export default function SettingsPage() {
               <button
                 onClick={() => setSettings(prev => ({ ...prev, priceAlerts: !prev.priceAlerts }))}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  settings.priceAlerts ? 'bg-brand-500' : 'bg-gray-600'
+                  settings.priceAlerts … 'bg-brand-500' : 'bg-gray-600'
                 }`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    settings.priceAlerts ? 'translate-x-6' : 'translate-x-1'
+                    settings.priceAlerts … 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
               </button>
@@ -302,12 +302,12 @@ export default function SettingsPage() {
               <button
                 onClick={() => setSettings(prev => ({ ...prev, offerUpdates: !prev.offerUpdates }))}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  settings.offerUpdates ? 'bg-brand-500' : 'bg-gray-600'
+                  settings.offerUpdates … 'bg-brand-500' : 'bg-gray-600'
                 }`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    settings.offerUpdates ? 'translate-x-6' : 'translate-x-1'
+                    settings.offerUpdates … 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
               </button>
@@ -321,12 +321,12 @@ export default function SettingsPage() {
               <button
                 onClick={() => setSettings(prev => ({ ...prev, auctionEndings: !prev.auctionEndings }))}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  settings.auctionEndings ? 'bg-brand-500' : 'bg-gray-600'
+                  settings.auctionEndings … 'bg-brand-500' : 'bg-gray-600'
                 }`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    settings.auctionEndings ? 'translate-x-6' : 'translate-x-1'
+                    settings.auctionEndings … 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
               </button>
@@ -390,12 +390,12 @@ export default function SettingsPage() {
               <button
                 onClick={() => setSettings(prev => ({ ...prev, showProfilePublicly: !prev.showProfilePublicly }))}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  settings.showProfilePublicly ? 'bg-brand-500' : 'bg-gray-600'
+                  settings.showProfilePublicly … 'bg-brand-500' : 'bg-gray-600'
                 }`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    settings.showProfilePublicly ? 'translate-x-6' : 'translate-x-1'
+                    settings.showProfilePublicly … 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
               </button>
@@ -409,12 +409,12 @@ export default function SettingsPage() {
               <button
                 onClick={() => setSettings(prev => ({ ...prev, shareActivityData: !prev.shareActivityData }))}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  settings.shareActivityData ? 'bg-brand-500' : 'bg-gray-600'
+                  settings.shareActivityData … 'bg-brand-500' : 'bg-gray-600'
                 }`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    settings.shareActivityData ? 'translate-x-6' : 'translate-x-1'
+                    settings.shareActivityData … 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
               </button>
@@ -433,7 +433,7 @@ export default function SettingsPage() {
             <div className="flex justify-between items-center p-3 bg-white/5 rounded-lg">
               <span className="text-sm text-gray-400">Wallet Address</span>
               <span className="text-sm font-mono text-white">
-                {publicKey?.slice(0, 8)}…{publicKey?.slice(-8)}
+                {publicKey….slice(0, 8)}…{publicKey….slice(-8)}
               </span>
             </div>
             <div className="flex justify-between items-center p-3 bg-white/5 rounded-lg">
@@ -454,12 +454,12 @@ export default function SettingsPage() {
             disabled={saving}
             className="flex items-center justify-center gap-2 flex-1 rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-brand-500/25 hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
-            {saving ? (
+            {saving … (
               <>
                 <RefreshCw className="h-4 w-4 animate-spin" />
                 Saving...
               </>
-            ) : saved ? (
+            ) : saved … (
               <>
                 <Check className="h-4 w-4" />
                 Saved!
