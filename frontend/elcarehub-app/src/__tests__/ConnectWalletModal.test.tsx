@@ -5,8 +5,7 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-// ── Mocks ─────────────────────────────────────────────────────────────────────
-
+// -- Mocks --
 const mockConnect = jest.fn();
 const mockRefresh = jest.fn();
 let mockStatus = 'DISCONNECTED';
@@ -19,9 +18,20 @@ jest.mock('@/context/WalletContext', () => ({
     status: mockStatus,
     connect: mockConnect,
     isConnecting: mockIsConnecting,
+    isConnected: mockStatus === 'CONNECTED',
+    isWrongNetwork: false,
     error: mockError,
     publicKey: mockPublicKey,
     refresh: mockRefresh,
+    walletType: null,
+    networkPassphrase: null,
+    isInstalled: false,
+    disconnect: jest.fn(),
+    connectFreighter: mockConnect,
+    connectLobstr: jest.fn(),
+    freighter: { isInstalled: false, isConnecting: false, isConnected: false, isWrongNetwork: false, error: null },
+    lobstr: { isInstalled: false, isConnecting: false, isConnected: false, isWrongNetwork: false, error: null },
+    magic: { isConnecting: false, isConnected: false, error: null, publicAddress: null, logout: jest.fn() },
   }),
 }));
 
@@ -31,7 +41,7 @@ jest.mock('@/components/MagicWalletModal', () => ({
 }));
 
 jest.mock('@/lib/config', () => ({
-  config: { network: 'testnet' },
+  config: { network: 'testnet', contractId: 'CTEST123' },
 }));
 
 jest.mock('posthog-js', () => ({
@@ -42,14 +52,13 @@ jest.mock('lucide-react', () =>
   Object.fromEntries(
     ['X', 'Wallet', 'ExternalLink', 'ShieldCheck', 'AlertTriangle',
       'ArrowRight', 'Loader2', 'CheckCircle2', 'Mail']
-      .map((name) => [name, () => <span />])
+      .map((name) => [name, () => <span data-testid={name} />])
   )
 );
 
 import { ConnectWalletModal } from '@/components/ConnectWalletModal';
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
+// -- Tests --
 describe('ConnectWalletModal', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -84,11 +93,10 @@ describe('ConnectWalletModal', () => {
     }
   });
 
-  it('calls connect when the Freighter Wallet button is clicked', async () => {
+  it('calls connect when the Freighter button is clicked', async () => {
     const user = userEvent.setup();
     render(<ConnectWalletModal isOpen={true} onClose={jest.fn()} />);
-    // The Freighter button contains "Freighter Wallet" text
-    const connectBtn = screen.getByRole('button', { name: /freighter wallet/i });
+    const connectBtn = screen.getByRole('button', { name: /freighter/i });
     await user.click(connectBtn);
     expect(mockConnect).toHaveBeenCalled();
   });
@@ -99,9 +107,8 @@ describe('ConnectWalletModal', () => {
     expect(screen.getByText(/connection rejected/i)).toBeInTheDocument();
   });
 
-  it('shows Magic Wallet as coming soon', () => {
+  it('shows Magic Wallet option', () => {
     render(<ConnectWalletModal isOpen={true} onClose={jest.fn()} />);
     expect(screen.getByText(/magic wallet/i)).toBeInTheDocument();
-    expect(screen.getByText(/coming soon/i)).toBeInTheDocument();
   });
 });

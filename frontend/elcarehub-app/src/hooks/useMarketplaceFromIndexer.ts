@@ -5,7 +5,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { config } from "@/lib/config";
 import { getAllListings, Listing } from "@/lib/contract";
 import { fetchListings } from "@/lib/indexer";
 import { getReadableErrorMessage } from "@/lib/errors";
@@ -25,7 +24,6 @@ export function useMarketplaceFromIndexer(opts?: { status?: string; limit?: numb
   useTransientErrorToast(error);
 
   const refresh = useCallback(async () => {
-    if (!config.contractId) { return; }
     setIsLoading(true);
     setError(null);
     try {

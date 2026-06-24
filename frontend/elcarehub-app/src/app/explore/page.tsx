@@ -21,7 +21,6 @@ import { SearchFilter, Filters, SortOption } from "@/components/SearchFilter";
 import { fetchMetadata, ArtworkMetadata } from "@/lib/ipfs";
 import { fetchListings } from "@/lib/indexer";
 import { getAllListings } from "@/lib/contract";
-import { config } from "@/lib/config";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -76,7 +75,6 @@ export default function ExplorePage() {
 
   // Fetch from indexer whenever database-filterable params change
   const load = useCallback(async () => {
-    if (!config.contractId) { setAllListings([]); setIsLoading(false); return; }
     setIsLoading(true);
     setError(null);
     try {

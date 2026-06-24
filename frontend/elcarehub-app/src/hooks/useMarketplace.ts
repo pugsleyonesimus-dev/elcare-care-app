@@ -17,7 +17,6 @@ import {
   stroopsToXlm,
 } from "@/lib/contract";
 import { fetchListings, fetchArtistListings } from "@/lib/indexer";
-import { config } from "@/lib/config";
 import {
   uploadImageToIPFS,
   uploadMetadataToIPFS,
@@ -43,7 +42,6 @@ export function useMarketplace(opts?: { page?: number; limit?: number }) {
   useTransientErrorToast(error);
 
   const refresh = useCallback(async () => {
-    if (!config.contractId) { setListings([]); return; }
     setIsLoading(true);
     setError(null);
     try {

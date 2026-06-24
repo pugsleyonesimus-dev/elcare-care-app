@@ -19,7 +19,6 @@ import {
     getTokenWhitelist
 } from "@/lib/contract";
 import { Horizon } from "@stellar/stellar-sdk";
-import { config } from "@/lib/config";
 
 export interface AdminStats {
     totalListings: number;
@@ -35,7 +34,6 @@ export function useAdminStats() {
     const [error, setError] = useState<string | null>(null);
 
     const refresh = useCallback(async () => {
-    if (!config.contractId) return;
         setIsLoading(true);
         setError(null);
         try {
