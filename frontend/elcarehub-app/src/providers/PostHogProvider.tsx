@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import posthog from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
@@ -52,7 +52,7 @@ export function CSPostHogProvider({ children }: { children: React.ReactNode }) {
 
 // Helper functions for custom event tracking
 export const trackEvent = {
-  walletConnected: (walletType: "freighter" | "magic", publicKey: string) => {
+  walletConnected: (walletType: "freighter" | "lobstr" | "magic", publicKey: string) => {
     if (posthog.__loaded) {
       posthog.capture("Wallet Connected", {
         wallet_type: walletType,
