@@ -649,11 +649,16 @@ impl MarketplaceContract {
             panic_with_error!(&env, MarketplaceError::BidTooLow);
         }
 
-        let token_client = TokenClient::new(&env, &auction.token);
-        if let Some(prev) = auction.highest_bidder.clone() {
-            token_client.transfer(&env.current_contract_address(), &prev, &auction.highest_bid);
-        }
-        token_client.transfer(&bidder, &env.current_contract_address(), &amount);
+        // Capture the previous highest bidder/amount before they are overwritten,
+        // so the escrowed funds can be refunded after state is recorded.
+        let previous_bidder = auction.highest_bidder.clone();
+        let previous_bid = auction.highest_bid;
+
+        // ── CHECKS-EFFECTS-INTERACTIONS ──────────────────────────────────────
+        // Record the new highest bid BEFORE moving any tokens, so a reentrant
+        // place_bid on the same auction observes the updated state. The whole
+        // call is atomic: if any transfer below fails, all of these effects roll
+        // back, so escrow can never be left inconsistent.
         auction.highest_bid = amount;
         auction.highest_bidder = Some(bidder.clone());
         save_auction(&env, &auction);
@@ -664,6 +669,16 @@ impl MarketplaceContract {
             bid_amount: amount,
         }
         .publish(&env);
+
+        // ── INTERACTIONS ─────────────────────────────────────────────────────
+        // Refund the previous bidder's escrow, then pull the new bid into escrow.
+        // Net effect: contract-held escrow for this auction equals `amount`, the
+        // new highest bid.
+        let token_client = TokenClient::new(&env, &auction.token);
+        if let Some(prev) = previous_bidder {
+            token_client.transfer(&env.current_contract_address(), &prev, &previous_bid);
+        }
+        token_client.transfer(&bidder, &env.current_contract_address(), &amount);
     }
 
     pub fn finalize_auction(env: Env, caller: Address, auction_id: u64) {

@@ -4316,3 +4316,60 @@ fn test_err_unreachable_variants_have_no_trigger() {
     assert_eq!(crate::types::MarketplaceError::AuctionNotExpired as u32, 13);
     assert_eq!(crate::types::MarketplaceError::InvalidRoyalty as u32, 24);
 }
+
+// ── Issue #20: atomic refund of the previous highest bidder on a new bid ─────
+
+#[test]
+fn test_outbid_refunds_prev_and_escrow_equals_highest_bid() {
+    let (env, client, artist, buyer1, token_id, contract_id, collection_id) = setup();
+    let buyer2 = Address::generate(&env);
+    let buyer3 = Address::generate(&env);
+    let sac = StellarAssetClient::new(&env, &token_id);
+    sac.mint(&buyer2, &100_000_000_000_i128);
+    sac.mint(&buyer3, &100_000_000_000_i128);
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+
+    let id = client.create_auction(
+        &artist,
+        &token_id,
+        &collection_id,
+        &1u64,
+        &1_000_000_i128,
+        &3600u64,
+        &valid_recipients(&env, &artist),
+    );
+
+    let token = TokenClient::new(&env, &token_id);
+    let base = 100_000_000_000_i128;
+    // Contract is pre-funded in setup(); measure escrow as the delta from this.
+    let contract_base = token.balance(&contract_id);
+
+    // Bid 1 — buyer1 escrows 1_500_000.
+    client.place_bid(&buyer1, &id, &1_500_000_i128);
+    assert_eq!(token.balance(&buyer1), base - 1_500_000);
+    assert_eq!(token.balance(&contract_id) - contract_base, 1_500_000);
+
+    // Bid 2 — buyer2 outbids; buyer1 must be fully refunded.
+    client.place_bid(&buyer2, &id, &2_000_000_i128);
+    assert_eq!(token.balance(&buyer1), base, "buyer1 fully refunded");
+    assert_eq!(token.balance(&buyer2), base - 2_000_000);
+    // Escrow now equals the new highest bid (prev refund + new escrow net out).
+    assert_eq!(token.balance(&contract_id) - contract_base, 2_000_000);
+
+    // Bid 3 — buyer3 outbids; buyer2 must be fully refunded.
+    client.place_bid(&buyer3, &id, &2_500_000_i128);
+    assert_eq!(token.balance(&buyer2), base, "buyer2 fully refunded");
+    assert_eq!(token.balance(&buyer3), base - 2_500_000);
+    assert_eq!(token.balance(&contract_id) - contract_base, 2_500_000);
+
+    // Final invariant: contract-held escrow equals the current highest bid.
+    let auction = client.get_auction(&id);
+    assert_eq!(auction.highest_bid, 2_500_000_i128);
+    assert_eq!(auction.highest_bidder, Some(buyer3.clone()));
+    assert_eq!(
+        token.balance(&contract_id) - contract_base,
+        auction.highest_bid,
+        "escrow must equal the current highest bid"
+    );
+}
