@@ -441,7 +441,8 @@ export type MarketplaceSSEEventType =
   | "ARTWORK_SOLD"
   | "BID_PLACED"
   | "AUCTION_FINALIZED"
-  | "AUCTION_CANCELLED";
+  | "AUCTION_CANCELLED"
+  | "AUCTION_EXTENDED";
 
 export interface MarketplaceSSEEvent {
   type: MarketplaceSSEEventType;
@@ -498,6 +499,7 @@ const SSE_RELEVANT_TYPES = new Set<string>([
   "BID_PLACED",
   "AUCTION_FINALIZED",
   "AUCTION_CANCELLED",
+  "AUCTION_EXTENDED",
 ]);
 
 function parseSSEData(rawData: string): MarketplaceSSEEvent | null {

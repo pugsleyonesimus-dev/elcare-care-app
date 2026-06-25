@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// app/auctions/[id]/page.tsx — Auction detail page
+// app/auctions/[id]/page.tsx — Auction detail page (ISSUE-021)
 // ─────────────────────────────────────────────────────────────
 
 "use client";
@@ -10,12 +10,17 @@ import Image from "next/image";
 import Link from "next/link";
 import { getAuction, stroopsToXlm, Auction } from "@/lib/contract";
 import { fetchMetadata, cidToGatewayUrl, ArtworkMetadata } from "@/lib/ipfs";
-import { getListingActivity, ActivityEvent } from "@/lib/indexer";
+import {
+  getListingActivity,
+  ActivityEvent,
+  subscribeToMarketplaceEvents,
+} from "@/lib/indexer";
 import { getReadableErrorMessage } from "@/lib/errors";
 import { useWalletContext } from "@/context/WalletContext";
 import { usePlaceBid } from "@/hooks/usePlaceBid";
 import { useFinalizeAuction } from "@/hooks/useAuctions";
 import { GuardButton } from "@/components/WalletGuard";
+import { config } from "@/lib/config";
 import {
   ArrowLeft,
   Clock,
@@ -33,40 +38,84 @@ import {
   Flag,
 } from "lucide-react";
 
-// ── Countdown component ──────────────────────────────────────
+// ── useAuctionCountdown ──────────────────────────────────────
+//
+// Live countdown hook that can absorb endTime extensions
+// delivered via the SSE AUCTION_EXTENDED event (ISSUE-021).
 
-function Countdown({ endTime }: { endTime: number }) {
+export function useAuctionCountdown(initialEndTime: number) {
+  const [endTime, setEndTime] = useState(initialEndTime);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
+  // Keep endTime in sync if the parent refreshes the auction object.
   useEffect(() => {
-    const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    setEndTime(initialEndTime);
+  }, [initialEndTime]);
+
+  // Tick every second.
+  useEffect(() => {
+    const id = setInterval(
+      () => setNow(Math.floor(Date.now() / 1000)),
+      1_000
+    );
     return () => clearInterval(id);
   }, []);
 
   const remaining = Math.max(0, endTime - now);
+  const days = Math.floor(remaining / 86400);
+  const hours = Math.floor((remaining % 86400) / 3600);
+  const minutes = Math.floor((remaining % 3600) / 60);
+  const seconds = remaining % 60;
 
-  if (remaining === 0) {
+  return {
+    endTime,
+    setEndTime,
+    remaining,
+    isExpired: remaining <= 0,
+    days,
+    hours,
+    minutes,
+    seconds,
+  };
+}
+
+// ── Countdown component ──────────────────────────────────────
+
+interface CountdownProps {
+  endTime: number;
+  /** Called when the countdown receives an extension via SSE. */
+  onExtend?: (newEndTime: number) => void;
+}
+
+export function Countdown({ endTime, onExtend }: CountdownProps) {
+  const { days, hours, minutes, seconds, isExpired, setEndTime } =
+    useAuctionCountdown(endTime);
+
+  // Allow parent to push an extended endTime in.
+  useEffect(() => {
+    setEndTime(endTime);
+  }, [endTime, setEndTime]);
+
+  if (isExpired) {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1 text-sm font-semibold text-red-600">
+      <span
+        data-testid="countdown-expired"
+        className="inline-flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1 text-sm font-semibold text-red-600"
+      >
         <Flag size={13} />
         Auction Ended
       </span>
     );
   }
 
-  const d = Math.floor(remaining / 86400);
-  const h = Math.floor((remaining % 86400) / 3600);
-  const m = Math.floor((remaining % 3600) / 60);
-  const s = remaining % 60;
-
   return (
-    <div className="flex items-center gap-3">
+    <div data-testid="countdown" className="flex items-center gap-3">
       {(
         [
-          { label: "Days", value: d },
-          { label: "Hours", value: h },
-          { label: "Min", value: m },
-          { label: "Sec", value: s },
+          { label: "Days", value: days },
+          { label: "Hours", value: hours },
+          { label: "Min", value: minutes },
+          { label: "Sec", value: seconds },
         ] as const
       ).map(({ label, value }) => (
         <div
@@ -130,9 +179,14 @@ export default function AuctionDetailPage() {
   const [bidSuccess, setBidSuccess] = useState(false);
   const [finalizeSuccess, setFinalizeSuccess] = useState(false);
 
+  // Tracks the live end time — may be updated by an SSE AUCTION_EXTENDED event.
+  const [liveEndTime, setLiveEndTime] = useState<number>(0);
+
   const { bid, isBidding, error: bidError } = usePlaceBid(publicKey);
   const { finalize, isFinalizing, error: finalizeError } =
     useFinalizeAuction(publicKey);
+
+  // ── Data loader ──────────────────────────────────────────
 
   const loadData = useCallback(async () => {
     if (!id) return;
@@ -141,6 +195,7 @@ export default function AuctionDetailPage() {
     try {
       const auctionData = await getAuction(Number(id));
       setAuction(auctionData);
+      setLiveEndTime(auctionData.end_time);
 
       const [meta, history] = await Promise.all([
         fetchMetadata(auctionData.metadata_cid).catch(() => null),
@@ -158,6 +213,56 @@ export default function AuctionDetailPage() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // ── SSE subscription — live event streaming (ISSUE-021) ──
+
+  useEffect(() => {
+    if (!id) return;
+    const auctionId = Number(id);
+
+    const sub = subscribeToMarketplaceEvents(config.indexerUrl, {
+      debounceMs: 0,
+      onEvent(event) {
+        // Only process events for this auction.
+        if (event.auctionId !== undefined && event.auctionId !== auctionId) {
+          return;
+        }
+
+        switch (event.type) {
+          // A bid was placed — refresh auction data so highest_bid is up to date.
+          case "BID_PLACED":
+            loadData();
+            break;
+
+          // Auction extended: update endTime in place without a full reload.
+          case "AUCTION_EXTENDED": {
+            const newEndTime =
+              event.data?.new_end_time != null
+                ? Number(event.data.new_end_time)
+                : undefined;
+            if (newEndTime && newEndTime > 0) {
+              setLiveEndTime(newEndTime);
+              // Patch auction state so metadata details stay consistent.
+              setAuction((prev) =>
+                prev ? { ...prev, end_time: newEndTime } : prev
+              );
+            }
+            break;
+          }
+
+          // Auction finalized or cancelled — do a full refresh to update status.
+          case "AUCTION_FINALIZED":
+          case "AUCTION_CANCELLED":
+            loadData();
+            break;
+        }
+      },
+    });
+
+    return () => sub.close();
+  }, [id, loadData]);
+
+  // ── Handlers ──────────────────────────────────────────────
 
   const handleBid = async () => {
     if (!auction) return;
@@ -181,8 +286,11 @@ export default function AuctionDetailPage() {
     }
   };
 
+  // ── Derived state ─────────────────────────────────────────
+
   const now = Math.floor(Date.now() / 1000);
-  const isExpired = auction ? now >= auction.end_time : false;
+  // Use liveEndTime (updated by SSE) for expiry calculations.
+  const isExpired = liveEndTime > 0 ? now >= liveEndTime : false;
   const isActive = auction?.status === "Active";
   const isFinalized = auction?.status === "Finalized";
   const isCancelled = auction?.status === "Cancelled";
@@ -192,6 +300,8 @@ export default function AuctionDetailPage() {
   const imageUrl = metadata?.image ? cidToGatewayUrl(metadata.image) : null;
   const highestBidXlm = auction ? stroopsToXlm(auction.highest_bid) : "0";
   const reserveXlm = auction ? stroopsToXlm(auction.reserve_price) : "0";
+
+  // ── Loading skeleton ──────────────────────────────────────
 
   if (isLoading) {
     return (
@@ -266,12 +376,13 @@ export default function AuctionDetailPage() {
 
             {/* Status badge */}
             <span
-              className={`absolute left-4 top-4 rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wider ${isActive
-                ? "bg-green-500 text-white"
-                : isFinalized
+              className={`absolute left-4 top-4 rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wider ${
+                isActive
+                  ? "bg-green-500 text-white"
+                  : isFinalized
                   ? "bg-blue-500 text-white"
                   : "bg-gray-400 text-white"
-                }`}
+              }`}
             >
               {auction.status}
             </span>
@@ -291,14 +402,14 @@ export default function AuctionDetailPage() {
               )}
             </div>
 
-            {/* Countdown */}
+            {/* Countdown — uses liveEndTime so SSE extensions are reflected. */}
             {isActive && (
               <div>
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 flex items-center gap-1">
                   <Clock size={12} />
                   Time Remaining
                 </p>
-                <Countdown endTime={auction.end_time} />
+                <Countdown endTime={liveEndTime} />
               </div>
             )}
 
@@ -372,12 +483,13 @@ export default function AuctionDetailPage() {
               </div>
             )}
 
-            {/* Finalize button (expired active auctions) */}
+            {/* Finalize CTA — available to any user once the auction has expired. */}
             {canFinalize && !finalizeSuccess && (
               <div className="space-y-2">
                 <GuardButton
                   onClick={handleFinalize}
                   disabled={isFinalizing}
+                  data-testid="finalize-btn"
                   className="w-full rounded-xl bg-midnight-900 px-5 py-3 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50 transition-all"
                 >
                   {isFinalizing ? (
@@ -406,17 +518,19 @@ export default function AuctionDetailPage() {
 
             {(isFinalized || isCancelled) && !finalizeSuccess && (
               <div
-                className={`flex items-center gap-2 rounded-xl px-4 py-3 text-sm ${isFinalized
-                  ? "bg-blue-50 text-blue-700"
-                  : "bg-gray-100 text-gray-600"
-                  }`}
+                className={`flex items-center gap-2 rounded-xl px-4 py-3 text-sm ${
+                  isFinalized
+                    ? "bg-blue-50 text-blue-700"
+                    : "bg-gray-100 text-gray-600"
+                }`}
               >
                 <CheckCircle2 size={16} />
                 {isFinalized
-                  ? `Won by ${auction.highest_bidder
-                    ? `${auction.highest_bidder.slice(0, 8)}…`
-                    : "unknown"
-                  } for ${highestBidXlm} XLM`
+                  ? `Won by ${
+                      auction.highest_bidder
+                        ? `${auction.highest_bidder.slice(0, 8)}…`
+                        : "unknown"
+                    } for ${highestBidXlm} XLM`
                   : "Auction ended with no bids"}
               </div>
             )}
@@ -443,7 +557,7 @@ export default function AuctionDetailPage() {
                   {
                     icon: Calendar,
                     label: "End Time",
-                    value: new Date(auction.end_time * 1000).toLocaleString(),
+                    value: new Date(liveEndTime * 1000).toLocaleString(),
                   },
                 ] as const
               ).map(({ icon: Icon, label, value }) => (
@@ -481,10 +595,11 @@ export default function AuctionDetailPage() {
               <button
                 key={t}
                 onClick={() => setActiveTab(t)}
-                className={`rounded-full px-4 py-1.5 text-sm font-medium transition-all ${activeTab === t
-                  ? "bg-brand-500 text-white"
-                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                  }`}
+                className={`rounded-full px-4 py-1.5 text-sm font-medium transition-all ${
+                  activeTab === t
+                    ? "bg-brand-500 text-white"
+                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                }`}
               >
                 {t === "details" ? "Details" : "Bid History"}
                 {t === "bids" && (
@@ -526,7 +641,6 @@ export default function AuctionDetailPage() {
                 <div>
                   <p className="text-xs text-gray-400">Royalty</p>
                   <p className="font-medium text-gray-700">
-                    {/* Royalties handled by collection contract natively */}
                     Enforced natively
                   </p>
                 </div>

@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// components/BiddingPanel.tsx — Auction bidding UI
+// components/BiddingPanel.tsx — Auction bidding UI (ISSUE-019)
 // ─────────────────────────────────────────────────────────────
 
 "use client";
@@ -75,26 +75,37 @@ export function BiddingPanel({
 
   const currentBidXlm = parseFloat(stroopsToXlm(auction.highest_bid));
   const reserveXlm = parseFloat(stroopsToXlm(auction.reserve_price));
-  const minimumBid = Math.max(
-    currentBidXlm > 0 ? currentBidXlm + 0.0000001 : reserveXlm,
-    reserveXlm
-  );
+
+  // ISSUE-019: minimum next bid = current highest bid + 1 stroop increment.
+  // If no bid yet, minimum is the reserve price.
+  const MIN_INCREMENT_XLM = 0.0000001; // 1 stroop
+  const minimumNextBid =
+    currentBidXlm > 0 ? currentBidXlm + MIN_INCREMENT_XLM : reserveXlm;
 
   const isOwn = publicKey === auction.creator;
   const isActive = auction.status === "Active";
   const canBid = isActive && !isExpired && !isOwn;
   const canFinalize = isActive && isExpired;
 
+  // Pre-fill input with minimum next bid when the panel first becomes interactive.
+  useEffect(() => {
+    if (canBid && !bidAmount) {
+      setBidAmount(minimumNextBid.toFixed(7));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canBid]);
+
+  // ISSUE-019: client-side validation against minimum next bid.
   const bidValidation = useMemo(() => {
     const amount = parseFloat(bidAmount);
     if (!bidAmount) return null;
     if (isNaN(amount) || amount <= 0) return "Enter a valid amount";
-    if (amount < reserveXlm)
-      return `Bid must be at least ${reserveXlm} XLM (reserve price)`;
-    if (currentBidXlm > 0 && amount <= currentBidXlm)
-      return `Bid must be higher than current bid (${stroopsToXlm(auction.highest_bid)} XLM)`;
+    if (amount < minimumNextBid)
+      return `Minimum bid is ${minimumNextBid.toFixed(7)} XLM${
+        currentBidXlm > 0 ? " (current + increment)" : " (reserve price)"
+      }`;
     return null;
-  }, [bidAmount, reserveXlm, currentBidXlm, auction.highest_bid]);
+  }, [bidAmount, minimumNextBid, currentBidXlm]);
 
   const handleBid = async () => {
     const amount = parseFloat(bidAmount);
@@ -120,8 +131,7 @@ export function BiddingPanel({
       {/* Status badge */}
       <div className="flex items-center justify-between">
         <span
-          className={`rounded-full px-3 py-1 text-xs font-semibold ${STATUS_COLOR[auction.status] ?? ""
-            }`}
+          className={`rounded-full px-3 py-1 text-xs font-semibold ${STATUS_COLOR[auction.status] ?? ""}`}
         >
           {auction.status}
         </span>
@@ -188,12 +198,25 @@ export function BiddingPanel({
         )}
       </div>
 
-      {/* Reserve price */}
-      <div className="text-xs text-gray-500">
-        Reserve price:{" "}
-        <span className="font-semibold text-gray-700">
-          {stroopsToXlm(auction.reserve_price)} XLM
-        </span>
+      {/* Reserve price + minimum next bid (ISSUE-019) */}
+      <div className="space-y-1 text-xs text-gray-500">
+        <div className="flex items-center justify-between">
+          <span>Reserve price:</span>
+          <span className="font-semibold text-gray-700">
+            {stroopsToXlm(auction.reserve_price)} XLM
+          </span>
+        </div>
+        {isActive && (
+          <div
+            data-testid="minimum-next-bid"
+            className="flex items-center justify-between text-brand-600"
+          >
+            <span>Minimum next bid:</span>
+            <span className="font-semibold">
+              {minimumNextBid.toFixed(7)} XLM
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Bid success */}
@@ -228,14 +251,14 @@ export function BiddingPanel({
             <div className="relative">
               <input
                 type="number"
-                min={minimumBid}
-                step="any"
+                min={minimumNextBid}
+                step="0.0000001"
                 value={bidAmount}
                 onChange={(e) => {
                   setBidAmount(e.target.value);
                   setBidSuccess(false);
                 }}
-                placeholder={`Min ${minimumBid.toFixed(2)} XLM`}
+                placeholder={`Min ${minimumNextBid.toFixed(7)} XLM`}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2.5 pr-14 text-sm focus:border-brand-500 focus:outline-none"
               />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-medium text-gray-400">

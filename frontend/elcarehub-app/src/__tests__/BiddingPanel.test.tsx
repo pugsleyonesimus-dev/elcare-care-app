@@ -104,7 +104,7 @@ describe('BiddingPanel', () => {
     render(
       <BiddingPanel auction={makeAuction({ highest_bid: 20_000_000n, highest_bidder: 'GBIDDER' })} />
     );
-    expect(screen.getByText(/highest bid/i)).toBeInTheDocument();
+    expect(screen.getByText(/highest bidder/i)).toBeInTheDocument();
   });
 
   it('shows Finalize button for expired auctions', () => {
@@ -135,5 +135,93 @@ describe('BiddingPanel', () => {
   it('shows Finalized badge for completed auctions', () => {
     render(<BiddingPanel auction={makeAuction({ status: 'Finalized' })} />);
     expect(screen.getByText(/finalized/i)).toBeInTheDocument();
+  });
+
+  // ── ISSUE-019 tests: minimum next bid ───────────────────────────────────────
+
+  it('displays the minimum next bid when there is an existing bid', () => {
+    render(
+      <BiddingPanel
+        auction={makeAuction({ highest_bid: 20_000_000n, highest_bidder: 'GBIDDER' })}
+      />
+    );
+    expect(screen.getByTestId('minimum-next-bid')).toBeInTheDocument();
+    // Minimum = 2 XLM (current) + 0.0000001 XLM (increment) = 2.0000001
+    expect(screen.getByTestId('minimum-next-bid').textContent).toContain('2.0000001');
+  });
+
+  it('does not show minimum next bid before the first bid', () => {
+    render(<BiddingPanel auction={makeAuction({ highest_bid: 0n })} />);
+    expect(screen.queryByTestId('minimum-next-bid')).not.toBeInTheDocument();
+  });
+
+  it('blocks bids below the minimum next bid with an inline error', async () => {
+    const user = userEvent.setup();
+    mockBid.mockResolvedValueOnce(true);
+
+    render(
+      <BiddingPanel
+        auction={makeAuction({ highest_bid: 20_000_000n, highest_bidder: 'GBIDDER' })}
+      />
+    );
+
+    // Try to bid exactly the current bid (2 XLM) — should be rejected.
+    const input = screen.getByPlaceholderText(/min/i);
+    await user.clear(input);
+    await user.type(input, '2');
+
+    // Wait for validation error.
+    await waitFor(() => {
+      expect(screen.getByText(/minimum bid is/i)).toBeInTheDocument();
+    });
+
+    // Place Bid button should be disabled.
+    const bidBtn = screen.getByRole('button', { name: /place bid/i });
+    expect(bidBtn).toBeDisabled();
+
+    // mockBid should NOT have been called.
+    expect(mockBid).not.toHaveBeenCalled();
+  });
+
+  it('allows bids equal to or above the minimum next bid', async () => {
+    const user = userEvent.setup();
+    mockBid.mockResolvedValueOnce(true);
+
+    render(
+      <BiddingPanel
+        auction={makeAuction({ highest_bid: 20_000_000n, highest_bidder: 'GBIDDER' })}
+      />
+    );
+
+    const input = screen.getByPlaceholderText(/min/i);
+    await user.clear(input);
+    // Bid exactly minimum next bid: 2.0000001 XLM
+    await user.type(input, '2.0000001');
+
+    // Should have NO validation error.
+    await waitFor(() => {
+      expect(screen.queryByText(/minimum bid is/i)).not.toBeInTheDocument();
+    });
+
+    // Button should be enabled.
+    const bidBtn = screen.getByRole('button', { name: /place bid/i });
+    expect(bidBtn).not.toBeDisabled();
+
+    await user.click(bidBtn);
+    await waitFor(() => expect(mockBid).toHaveBeenCalledWith(1, 2.0000001));
+  });
+
+  it('pre-fills the input with the minimum next bid on mount', async () => {
+    render(
+      <BiddingPanel
+        auction={makeAuction({ highest_bid: 20_000_000n, highest_bidder: 'GBIDDER' })}
+      />
+    );
+
+    const input = screen.getByPlaceholderText(/min/i) as HTMLInputElement;
+    // Should be pre-filled with 2.0000001 (current + increment).
+    await waitFor(() => {
+      expect(input.value).toBe('2.0000001');
+    });
   });
 });
