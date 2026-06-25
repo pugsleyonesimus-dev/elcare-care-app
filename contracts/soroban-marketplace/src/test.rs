@@ -4316,3 +4316,84 @@ fn test_err_unreachable_variants_have_no_trigger() {
     assert_eq!(crate::types::MarketplaceError::AuctionNotExpired as u32, 13);
     assert_eq!(crate::types::MarketplaceError::InvalidRoyalty as u32, 24);
 }
+
+// ── Issue #19: minimum bid increment enforcement ────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_min_increment_first_bid_below_reserve() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    let id = client.create_auction(
+        &artist,
+        &token_id,
+        &collection_id,
+        &1u64,
+        &1_000_000_i128, // reserve
+        &3600u64,
+        &valid_recipients(&env, &artist),
+    );
+    // First bid below the reserve price must revert with BidTooLow.
+    client.place_bid(&buyer, &id, &500_000_i128);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_min_increment_overbid_below_increment() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    let buyer2 = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&buyer2, &100_000_000_000_i128);
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    // Configure a 100_000 minimum increment, snapshotted at auction creation.
+    client.set_min_bid_increment(&artist, &100_000_i128);
+
+    let id = client.create_auction(
+        &artist,
+        &token_id,
+        &collection_id,
+        &1u64,
+        &1_000_000_i128,
+        &3600u64,
+        &valid_recipients(&env, &artist),
+    );
+
+    client.place_bid(&buyer, &id, &1_500_000_i128); // first valid bid
+    // Required next bid = 1_500_000 + 100_000 = 1_600_000; this is below that.
+    client.place_bid(&buyer2, &id, &1_550_000_i128);
+}
+
+#[test]
+fn test_min_increment_valid_overbid_succeeds() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    let buyer2 = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&buyer2, &100_000_000_000_i128);
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    client.set_min_bid_increment(&artist, &100_000_i128);
+    assert_eq!(client.get_min_bid_increment(), 100_000_i128);
+
+    let id = client.create_auction(
+        &artist,
+        &token_id,
+        &collection_id,
+        &1u64,
+        &1_000_000_i128,
+        &3600u64,
+        &valid_recipients(&env, &artist),
+    );
+
+    client.place_bid(&buyer, &id, &1_500_000_i128);
+    // Exactly meeting the increment (1_500_000 + 100_000) must succeed.
+    client.place_bid(&buyer2, &id, &1_600_000_i128);
+
+    let auction = client.get_auction(&id);
+    assert_eq!(auction.highest_bid, 1_600_000_i128);
+    assert_eq!(auction.highest_bidder, Some(buyer2.clone()));
+    assert_eq!(auction.min_increment, 100_000_i128);
+
+    // The outbid bidder was refunded.
+    let token = TokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&buyer), 100_000_000_000_i128);
+}

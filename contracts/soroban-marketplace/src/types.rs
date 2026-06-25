@@ -112,6 +112,10 @@ pub struct Auction {
     pub end_time: u64,
     pub status: AuctionStatus,
     pub recipients: soroban_sdk::Vec<Recipient>,
+    /// Minimum amount by which a new bid must exceed the current highest bid,
+    /// snapshotted from the global setting at auction creation. The first bid is
+    /// instead gated by `reserve_price`.
+    pub min_increment: i128,
 }
 
 #[contracttype]

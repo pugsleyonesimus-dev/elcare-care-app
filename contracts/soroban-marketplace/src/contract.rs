@@ -28,6 +28,11 @@ use crate::{
     },
 };
 
+/// Default minimum bid increment used when no global value has been configured.
+/// A value of 1 preserves the invariant that a new bid must strictly exceed the
+/// previous highest bid.
+const DEFAULT_MIN_BID_INCREMENT: i128 = 1;
+
 #[contract]
 pub struct MarketplaceContract;
 
@@ -118,6 +123,24 @@ impl MarketplaceContract {
 
     pub fn get_protocol_fee(env: Env) -> u32 {
         crate::storage::get_protocol_fee_bps_storage(&env).unwrap_or(0)
+    }
+
+    /// Set the global minimum bid increment (in payment-token stroops). New
+    /// auctions snapshot this value at creation. Admin-only; must be non-negative.
+    pub fn set_min_bid_increment(env: Env, admin: Address, increment: i128) {
+        admin.require_auth();
+        let stored_admin = Self::get_admin(env.clone()).expect("admin not set");
+        if admin != stored_admin {
+            panic_with_error!(&env, MarketplaceError::Unauthorized);
+        }
+        if increment < 0 {
+            panic_with_error!(&env, MarketplaceError::InvalidPrice);
+        }
+        crate::storage::set_min_bid_increment_storage(&env, increment);
+    }
+
+    pub fn get_min_bid_increment(env: Env) -> i128 {
+        crate::storage::get_min_bid_increment_storage(&env).unwrap_or(DEFAULT_MIN_BID_INCREMENT)
     }
 
     // ── Pause/Unpause Mechanism ────────────────────────────
@@ -604,6 +627,10 @@ impl MarketplaceContract {
         }
         let auction_id = increment_auction_count(&env);
         let end_time = env.ledger().timestamp() + duration;
+        // Snapshot the global minimum bid increment so the auction's bidding
+        // rules are fixed at creation time, regardless of later admin changes.
+        let min_increment = crate::storage::get_min_bid_increment_storage(&env)
+            .unwrap_or(DEFAULT_MIN_BID_INCREMENT);
         let auction = Auction {
             auction_id,
             creator: creator.clone(),
@@ -616,6 +643,7 @@ impl MarketplaceContract {
             end_time,
             status: AuctionStatus::Active,
             recipients,
+            min_increment,
         };
         save_auction(&env, &auction);
         add_artist_auction_id(&env, &creator, auction_id);
@@ -645,7 +673,19 @@ impl MarketplaceContract {
         if env.ledger().timestamp() >= auction.end_time {
             panic_with_error!(&env, MarketplaceError::AuctionExpired);
         }
-        if amount <= auction.highest_bid || amount < auction.reserve_price {
+        // Enforce the minimum acceptable bid on-chain:
+        //   • first bid (no prior bidder): must be at least `reserve_price`.
+        //   • subsequent bids: must exceed the current highest bid by at least
+        //     `min_increment`, computed with checked arithmetic to avoid overflow.
+        let required_min = if auction.highest_bid == 0 {
+            auction.reserve_price
+        } else {
+            auction
+                .highest_bid
+                .checked_add(auction.min_increment)
+                .unwrap_or_else(|| panic_with_error!(&env, MarketplaceError::BidTooLow))
+        };
+        if amount < required_min {
             panic_with_error!(&env, MarketplaceError::BidTooLow);
         }
 

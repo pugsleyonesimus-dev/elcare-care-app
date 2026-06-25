@@ -25,6 +25,7 @@ pub enum DataKey {
     IsPaused,
     PendingAdmin,
     ActiveListings,
+    MinBidIncrement,
 }
 
 pub const LEDGER_TTL_BUMP: u32 = 432_000;
@@ -335,6 +336,21 @@ pub fn get_protocol_fee_bps_storage(env: &Env) -> Option<u32> {
     let value = env.storage().persistent().get(&DataKey::ProtocolFeeBps);
     if value.is_some() {
         bump_entry_ttl(env, &DataKey::ProtocolFeeBps);
+    }
+    value
+}
+
+pub fn set_min_bid_increment_storage(env: &Env, increment: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::MinBidIncrement, &increment);
+    bump_entry_ttl(env, &DataKey::MinBidIncrement);
+}
+
+pub fn get_min_bid_increment_storage(env: &Env) -> Option<i128> {
+    let value = env.storage().persistent().get(&DataKey::MinBidIncrement);
+    if value.is_some() {
+        bump_entry_ttl(env, &DataKey::MinBidIncrement);
     }
     value
 }
