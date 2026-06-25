@@ -46,6 +46,20 @@ pub enum ListingStatus {
     Cancelled,
 }
 
+/// Discriminant carried in the ListingCancelledEvent to indicate why a listing
+/// was cancelled. This improves provenance display and analytics for indexers.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum CancelReason {
+    /// The listing owner (artist) explicitly cancelled the listing
+    Owner = 1,
+    /// The listing expired (time-based expiry, if implemented)
+    Expired = 2,
+    /// Admin revoked the artist's permission, causing automatic cancellation
+    AdminRevoked = 3,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Recipient {
@@ -70,6 +84,10 @@ pub struct Listing {
     pub status: ListingStatus,
     pub owner: Option<Address>,
     pub created_at: u32,
+    /// Protocol fee in basis points (0-10000) snapshotted at listing creation.
+    /// This ensures the fee applied at purchase matches what was displayed when
+    /// the listing was created, regardless of subsequent admin fee changes.
+    pub protocol_fee_bps: u32,
 }
 
 #[contracttype]

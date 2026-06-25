@@ -50,7 +50,10 @@ pub struct ArtworkSoldEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListingCancelledEvent {
     pub listing_id: u64,
-    pub artist: Address,
+    /// The actor that triggered the cancellation (may be the artist, admin, or contract).
+    pub cancelled_by: Address,
+    /// Discriminant indicating the reason for cancellation (Owner, Expired, AdminRevoked).
+    pub reason: crate::types::CancelReason,
     pub ledger_sequence: u32,
 }
 

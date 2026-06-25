@@ -23,8 +23,8 @@ use crate::{
         set_artist_revocation_storage, set_pending_admin_storage,
     },
     types::{
-        Auction, AuctionStatus, Listing, ListingStatus, MarketplaceError, Offer, OfferStatus,
-        Recipient,
+        Auction, AuctionStatus, CancelReason, Listing, ListingStatus, MarketplaceError, Offer,
+        OfferStatus, Recipient,
     },
 };
 
@@ -171,6 +171,57 @@ impl MarketplaceContract {
         is_artist_revoked_storage(&env, &artist)
     }
 
+    /// Cancel all active listings for a revoked artist.
+    /// Called by admin after revoking an artist to clean up their active listings.
+    /// Emits ListingCancelledEvent with reason=AdminRevoked for each cancelled listing.
+    pub fn cancel_artist_listings(env: Env, admin: Address, artist: Address) {
+        admin.require_auth();
+        let stored_admin = Self::get_admin(env.clone()).expect("admin not set");
+        if admin != stored_admin {
+            panic_with_error!(&env, MarketplaceError::Unauthorized);
+        }
+
+        // Only cancel listings if the artist is actually revoked
+        if !is_artist_revoked_storage(&env, &artist) {
+            return;
+        }
+
+        let listing_ids = get_artist_listing_ids(&env, &artist);
+        for listing_id in listing_ids.iter() {
+            if let Some(mut listing) = load_listing(&env, listing_id) {
+                if listing.status == ListingStatus::Active {
+                    // Refund all pending offers
+                    let offers = load_listing_offers(&env, listing_id);
+                    for offer_id in offers.iter() {
+                        if let Some(mut offer) = load_offer(&env, offer_id) {
+                            if offer.status == OfferStatus::Pending {
+                                TokenClient::new(&env, &offer.token).transfer(
+                                    &env.current_contract_address(),
+                                    &offer.offerer,
+                                    &offer.amount,
+                                );
+                                offer.status = OfferStatus::Rejected;
+                                save_offer(&env, &offer);
+                            }
+                        }
+                    }
+
+                    listing.status = ListingStatus::Cancelled;
+                    save_listing(&env, &listing);
+                    remove_from_active_listings(&env, listing_id);
+
+                    ListingCancelledEvent {
+                        listing_id,
+                        cancelled_by: admin.clone(),
+                        reason: CancelReason::AdminRevoked,
+                        ledger_sequence: env.ledger().sequence(),
+                    }
+                    .publish(&env);
+                }
+            }
+        }
+    }
+
     // ── Token Whitelist ─────────────────────────────────────
 
     pub fn add_token_to_whitelist(env: Env, token: Address) {
@@ -225,9 +276,7 @@ impl MarketplaceContract {
         token_id: u64,
         recipients: Vec<Recipient>,
     ) -> u64 {
-        if crate::storage::is_paused(&env) {
-            panic_with_error!(&env, MarketplaceError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         artist.require_auth();
         if Self::is_artist_revoked(env.clone(), artist.clone()) {
             panic_with_error!(&env, MarketplaceError::ArtistRevoked);
@@ -245,7 +294,8 @@ impl MarketplaceContract {
             panic_with_error!(&env, MarketplaceError::TooManyRecipients);
         }
 
-        // Read the current protocol fee so the combined bps can be validated.
+        // Snapshot the current protocol fee so the combined bps can be validated
+        // and the listing's economic terms are fixed at creation time.
         let protocol_fee_bps =
             crate::storage::get_protocol_fee_bps_storage(&env).unwrap_or(0);
 
@@ -271,6 +321,7 @@ impl MarketplaceContract {
             status: ListingStatus::Active,
             owner: None,
             created_at: env.ledger().sequence(),
+            protocol_fee_bps, // Snapshot the fee at creation time
         };
         save_listing(&env, &listing);
         add_artist_listing_id(&env, &artist, listing_id);
@@ -297,9 +348,7 @@ impl MarketplaceContract {
         new_token: Address,
         new_recipients: Vec<Recipient>,
     ) -> bool {
-        if crate::storage::is_paused(&env) {
-            panic_with_error!(&env, MarketplaceError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         artist.require_auth();
         let mut listing = load_listing(&env, listing_id)
             .unwrap_or_else(|| panic_with_error!(&env, MarketplaceError::ListingNotFound));
@@ -334,15 +383,14 @@ impl MarketplaceContract {
             panic_with_error!(&env, MarketplaceError::TooManyRecipients);
         }
 
-        // Validate combined bps before persisting the mutation so an existing
-        // listing cannot be edited into an invalid state.
-        let protocol_fee_bps =
-            crate::storage::get_protocol_fee_bps_storage(&env).unwrap_or(0);
-        Self::validate_recipients(&env, &new_recipients, protocol_fee_bps);
+        // Validate combined bps using the listing's snapshotted protocol fee
+        // (not the current global fee) so the listing remains internally consistent.
+        Self::validate_recipients(&env, &new_recipients, listing.protocol_fee_bps);
 
         listing.price = new_price;
         listing.token = new_token;
         listing.recipients = new_recipients;
+        // NOTE: listing.protocol_fee_bps remains unchanged — it was snapshotted at creation
 
         save_listing(&env, &listing);
 
@@ -375,9 +423,7 @@ impl MarketplaceContract {
         // or find the listing status already Sold (→ ListingSold), in both cases
         // reverting without double-spending.
         // ─────────────────────────────────────────────────────────────────────
-        if crate::storage::is_paused(&env) {
-            panic_with_error!(&env, MarketplaceError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         buyer.require_auth();
 
         // Reentrancy guard
@@ -457,6 +503,7 @@ impl MarketplaceContract {
 
         // ── INTERACTIONS (external calls after all state is final) ───────────
 
+        // Use the snapshotted protocol fee from the listing, not the current global fee
         Self::distribute_payout(
             &env,
             &listing.token,
@@ -466,6 +513,7 @@ impl MarketplaceContract {
             &listing.recipients,
             &buyer,
             true,
+            listing.protocol_fee_bps, // Use snapshotted fee
         );
 
         // Transfer the NFT
@@ -495,9 +543,7 @@ impl MarketplaceContract {
     }
 
     pub fn cancel_listing(env: Env, artist: Address, listing_id: u64) -> bool {
-        if crate::storage::is_paused(&env) {
-            panic_with_error!(&env, MarketplaceError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         artist.require_auth();
         let mut listing = load_listing(&env, listing_id)
             .unwrap_or_else(|| panic_with_error!(&env, MarketplaceError::ListingNotFound));
@@ -529,7 +575,8 @@ impl MarketplaceContract {
 
         ListingCancelledEvent {
             listing_id,
-            artist: artist.clone(),
+            cancelled_by: artist.clone(),
+            reason: crate::types::CancelReason::Owner,
             ledger_sequence: env.ledger().sequence(),
         }
         .publish(&env);
@@ -548,9 +595,7 @@ impl MarketplaceContract {
         duration: u64,
         recipients: Vec<Recipient>,
     ) -> u64 {
-        if crate::storage::is_paused(&env) {
-            panic_with_error!(&env, MarketplaceError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         creator.require_auth();
         if Self::is_artist_revoked(env.clone(), creator.clone()) {
             panic_with_error!(&env, MarketplaceError::Unauthorized);
@@ -594,9 +639,7 @@ impl MarketplaceContract {
     }
 
     pub fn place_bid(env: Env, bidder: Address, auction_id: u64, amount: i128) {
-        if crate::storage::is_paused(&env) {
-            panic_with_error!(&env, MarketplaceError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         bidder.require_auth();
         let mut auction = load_auction(&env, auction_id)
             .unwrap_or_else(|| panic_with_error!(&env, MarketplaceError::AuctionNotFound));
@@ -628,9 +671,7 @@ impl MarketplaceContract {
     }
 
     pub fn finalize_auction(env: Env, caller: Address, auction_id: u64) {
-        if crate::storage::is_paused(&env) {
-            panic_with_error!(&env, MarketplaceError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         caller.require_auth();
 
         // Reentrancy guard
@@ -662,6 +703,10 @@ impl MarketplaceContract {
 
         let (finalized_winner, finalized_amount) =
             if let Some(ref winner) = auction.highest_bidder.clone() {
+                // Auctions use the live global protocol fee at finalization time.
+                // (Auctions are not listings and do not snapshot the fee at creation.)
+                let auction_fee_bps =
+                    crate::storage::get_protocol_fee_bps_storage(&env).unwrap_or(0);
                 Self::distribute_payout(
                     &env,
                     &auction.token,
@@ -671,6 +716,7 @@ impl MarketplaceContract {
                     &auction.recipients,
                     winner,
                     false,
+                    auction_fee_bps,
                 );
 
                 // Transfer the NFT
@@ -711,9 +757,7 @@ impl MarketplaceContract {
         amount: i128,
         token: Address,
     ) -> u64 {
-        if crate::storage::is_paused(&env) {
-            panic_with_error!(&env, MarketplaceError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         offerer.require_auth();
         let listing = load_listing(&env, listing_id)
             .unwrap_or_else(|| panic_with_error!(&env, MarketplaceError::ListingNotFound));
@@ -760,9 +804,7 @@ impl MarketplaceContract {
     }
 
     pub fn withdraw_offer(env: Env, offerer: Address, offer_id: u64) {
-        if crate::storage::is_paused(&env) {
-            panic_with_error!(&env, MarketplaceError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         offerer.require_auth();
         let mut offer = load_offer(&env, offer_id)
             .unwrap_or_else(|| panic_with_error!(&env, MarketplaceError::OfferNotFound));
@@ -789,9 +831,7 @@ impl MarketplaceContract {
     }
 
     pub fn reject_offer(env: Env, artist: Address, offer_id: u64) {
-        if crate::storage::is_paused(&env) {
-            panic_with_error!(&env, MarketplaceError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         artist.require_auth();
         let mut offer = load_offer(&env, offer_id)
             .unwrap_or_else(|| panic_with_error!(&env, MarketplaceError::OfferNotFound));
@@ -820,9 +860,7 @@ impl MarketplaceContract {
     }
 
     pub fn accept_offer(env: Env, artist: Address, offer_id: u64) {
-        if crate::storage::is_paused(&env) {
-            panic_with_error!(&env, MarketplaceError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         artist.require_auth();
         let mut offer = load_offer(&env, offer_id)
             .unwrap_or_else(|| panic_with_error!(&env, MarketplaceError::OfferNotFound));
@@ -890,6 +928,8 @@ impl MarketplaceContract {
         .publish(&env);
 
         // ── INTERACTIONS ─────────────────────────────────────────────────────
+        // Use the listing's snapshotted protocol fee so settlement matches what
+        // was agreed at listing creation time.
         Self::distribute_payout(
             &env,
             &offer.token,
@@ -899,6 +939,7 @@ impl MarketplaceContract {
             &listing.recipients,
             &offer.offerer,
             false,
+            listing.protocol_fee_bps, // Use snapshotted fee
         );
 
         // Transfer the NFT
@@ -1003,6 +1044,15 @@ impl MarketplaceContract {
         admin.require_auth();
     }
 
+    /// Guard function that reverts with ContractPaused if the contract is paused.
+    /// Should be called at the beginning of every mutating entry point.
+    /// Read-only functions should NOT call this guard.
+    fn require_not_paused(env: &Env) {
+        if crate::storage::is_paused(env) {
+            panic_with_error!(env, MarketplaceError::ContractPaused);
+        }
+    }
+
     fn is_token_whitelisted(env: &Env, token: &Address) -> bool {
         let key = crate::storage::DataKey::TokenWhitelist;
         let whitelist = env
@@ -1058,6 +1108,7 @@ impl MarketplaceContract {
         recipients: &Vec<Recipient>,
         buyer: &Address,
         transfer_from_buyer: bool,
+        fee_bps: u32, // Protocol fee in bps — caller provides snapshotted or live value
     ) {
         let token = TokenClient::new(env, token_addr);
         if transfer_from_buyer {
@@ -1078,7 +1129,6 @@ impl MarketplaceContract {
             token.transfer(&env.current_contract_address(), &royalty_receiver, &royalty);
             payout -= royalty;
         }
-        let fee_bps = crate::storage::get_protocol_fee_bps_storage(env).unwrap_or(0);
         if let Some(t) = crate::storage::get_treasury_storage(env) {
             let fee = payout * fee_bps as i128 / 10_000;
             token.transfer(&env.current_contract_address(), &t, &fee);
