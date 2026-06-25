@@ -39,6 +39,8 @@ pub enum MarketplaceError {
     /// Intermediate arithmetic in fee/royalty computation would overflow i128.
     /// Reverts cleanly instead of panicking with an unmapped trap.
     ArithmeticOverflow = 27,
+    /// The batch_ids vector passed to cancel_listings exceeded MAX_BATCH_CANCEL.
+    BatchTooLarge = 28,
 }
 
 #[contracttype]

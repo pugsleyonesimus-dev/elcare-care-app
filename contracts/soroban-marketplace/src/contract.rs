@@ -584,6 +584,93 @@ impl MarketplaceContract {
         true
     }
 
+    /// Maximum number of listing IDs accepted by `cancel_listings`.
+    /// Calls with a larger vector revert with `BatchTooLarge`.
+    pub const MAX_BATCH_CANCEL: u32 = 20;
+
+    /// Batch-cancel multiple listings owned by `seller` in a single call.
+    ///
+    /// # Strict-mode policy
+    /// If any listing in `listing_ids`:
+    ///   - does not exist,
+    ///   - is not owned by `seller`, or
+    ///   - is not `Active`
+    /// the entire call reverts.  This prevents silent partial failures that
+    /// would leave the caller uncertain about which listings were cancelled.
+    ///
+    /// Pending offers on each cancelled listing are refunded (same as
+    /// `cancel_listing`).  One `ListingCancelledEvent` is emitted per listing.
+    ///
+    /// # Resource cap
+    /// `listing_ids.len()` must not exceed `MAX_BATCH_CANCEL`; over-cap
+    /// calls revert with `BatchTooLarge` before any state is mutated.
+    pub fn cancel_listings(env: Env, seller: Address, listing_ids: Vec<u64>) -> u32 {
+        Self::require_not_paused(&env);
+        seller.require_auth();
+
+        // ── Resource cap ────────────────────────────────────────────────────
+        if listing_ids.len() > Self::MAX_BATCH_CANCEL {
+            panic_with_error!(&env, MarketplaceError::BatchTooLarge);
+        }
+
+        // ── Strict validation pass (no state mutations yet) ─────────────────
+        // Walk every id and validate ownership / status upfront so that a
+        // single bad entry causes a clean revert before any listing is mutated.
+        for i in 0..listing_ids.len() {
+            let listing_id = listing_ids.get(i).unwrap();
+            let listing = match load_listing(&env, listing_id) {
+                Some(l) => l,
+                None => panic_with_error!(&env, MarketplaceError::ListingNotFound),
+            };
+            if listing.artist != seller {
+                panic_with_error!(&env, MarketplaceError::Unauthorized);
+            }
+            if listing.status != ListingStatus::Active {
+                panic_with_error!(&env, MarketplaceError::ListingNotActive);
+            }
+        }
+
+        // ── Mutation pass ────────────────────────────────────────────────────
+        // All validations passed; now cancel each listing and refund offers.
+        let mut cancelled: u32 = 0;
+        for i in 0..listing_ids.len() {
+            let listing_id = listing_ids.get(i).unwrap();
+            let mut listing = load_listing(&env, listing_id).unwrap();
+
+            // Refund and reject all pending offers.
+            let offers = load_listing_offers(&env, listing_id);
+            for offer_id in offers.iter() {
+                if let Some(mut offer) = load_offer(&env, offer_id) {
+                    if offer.status == OfferStatus::Pending {
+                        TokenClient::new(&env, &offer.token).transfer(
+                            &env.current_contract_address(),
+                            &offer.offerer,
+                            &offer.amount,
+                        );
+                        offer.status = OfferStatus::Rejected;
+                        save_offer(&env, &offer);
+                    }
+                }
+            }
+
+            listing.status = ListingStatus::Cancelled;
+            save_listing(&env, &listing);
+            remove_from_active_listings(&env, listing_id);
+
+            ListingCancelledEvent {
+                listing_id,
+                cancelled_by: seller.clone(),
+                reason: crate::types::CancelReason::Owner,
+                ledger_sequence: env.ledger().sequence(),
+            }
+            .publish(&env);
+
+            cancelled += 1;
+        }
+
+        cancelled
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create_auction(
         env: Env,
@@ -1004,6 +1091,60 @@ impl MarketplaceContract {
 
     pub fn get_active_listings_page(env: Env, start: u32, limit: u32) -> Vec<u64> {
         Self::get_active_listings(env, limit, start)
+    }
+
+    /// Maximum `limit` accepted by `get_listings_paginated`.
+    pub const MAX_PAGE_LIMIT: u32 = 100;
+
+    /// Paginated view over active listings.
+    ///
+    /// Returns up to `limit` resolved [`Listing`] structs starting at cursor
+    /// `start` (a zero-based index into the active-listings index).  `limit`
+    /// is clamped to [`MAX_PAGE_LIMIT`] so clients cannot request oversized
+    /// responses.
+    ///
+    /// # Return value
+    /// `(listings, next_cursor)` where:
+    /// - `listings` contains the resolved `Listing` structs for the page.
+    /// - `next_cursor` is the index to pass as `start` to fetch the next
+    ///   page.  When the returned page is the last one (i.e. there are no
+    ///   further entries), `next_cursor` equals the total number of active
+    ///   listing IDs, which is ≥ the current active-listing count and can be
+    ///   used as a sentinel by callers (`listings.len() < limit` also
+    ///   signals exhaustion).
+    ///
+    /// An out-of-range `start` (≥ total active listings) returns an empty
+    /// page and a `next_cursor` equal to `start` without panicking.
+    pub fn get_listings_paginated(env: Env, start: u32, limit: u32) -> (Vec<Listing>, u32) {
+        // Clamp limit to the hard maximum.
+        let effective_limit = if limit > Self::MAX_PAGE_LIMIT {
+            Self::MAX_PAGE_LIMIT
+        } else if limit == 0 {
+            // A zero limit is valid; return an empty page immediately.
+            return (Vec::new(&env), start);
+        } else {
+            limit
+        };
+
+        let ids = get_active_listing_ids(&env);
+        let total = ids.len();
+
+        // Out-of-range start: return empty page + same cursor (no panic).
+        if start >= total {
+            return (Vec::new(&env), start);
+        }
+
+        let end = (start + effective_limit).min(total);
+        let mut listings: Vec<Listing> = Vec::new(&env);
+        for i in start..end {
+            let listing_id = ids.get(i).unwrap();
+            if let Some(listing) = load_listing(&env, listing_id) {
+                listings.push_back(listing);
+            }
+        }
+
+        let next_cursor = end;
+        (listings, next_cursor)
     }
 
     pub fn get_offers_by_listing(env: Env, listing_id: u64) -> Vec<Offer> {

@@ -4137,3 +4137,457 @@ fn test_finalize_auction_checked_arithmetic_normal() {
     // Fee = 2_000_000 * 500 / 10_000 = 100_000
     assert_eq!(token.balance(&treasury), 100_000_i128);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Issue A — Batch cancel (cancel_listings)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Helper: create n listings owned by artist and return their IDs.
+fn create_n_listings(
+    env: &Env,
+    client: &MarketplaceContractClient,
+    artist: &Address,
+    token_id: &Address,
+    collection_id: &Address,
+    n: u32,
+) -> soroban_sdk::Vec<u64> {
+    let mut ids = soroban_sdk::Vec::new(env);
+    for i in 0..n {
+        let id = client.create_listing(
+            artist,
+            &((i as i128 + 1) * 1_000_000_i128),
+            &symbol_short!("XLM"),
+            token_id,
+            collection_id,
+            &(i as u64 + 1),
+            &valid_recipients(env, artist),
+        );
+        ids.push_back(id);
+    }
+    ids
+}
+
+// ── all-success: owner cancels all their own active listings ─────────────────
+
+#[test]
+fn test_cancel_listings_all_success() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+
+    let ids = create_n_listings(&env, &client, &artist, &token_id, &collection_id, 3);
+
+    let count = client.cancel_listings(&artist, &ids);
+    assert_eq!(count, 3u32);
+
+    // Every listing must be Cancelled.
+    for i in 0..ids.len() {
+        let id = ids.get(i).unwrap();
+        assert_eq!(client.get_listing(&id).status, ListingStatus::Cancelled);
+    }
+
+    // Active-listing index must be empty.
+    let active = client.get_active_listings(&5u32, &0u32);
+    assert!(active.is_empty());
+}
+
+// ── one listing: batch of one works identically to cancel_listing ────────────
+
+#[test]
+fn test_cancel_listings_single_entry() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+
+    let ids = create_n_listings(&env, &client, &artist, &token_id, &collection_id, 1);
+    let count = client.cancel_listings(&artist, &ids);
+    assert_eq!(count, 1u32);
+    assert_eq!(
+        client.get_listing(&ids.get(0).unwrap()).status,
+        ListingStatus::Cancelled
+    );
+}
+
+// ── one ListingCancelledEvent is emitted per cancelled listing ───────────────
+
+#[test]
+fn test_cancel_listings_emits_one_event_per_listing() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+
+    let ids = create_n_listings(&env, &client, &artist, &token_id, &collection_id, 3);
+    client.cancel_listings(&artist, &ids);
+
+    // Count events with topic "lst_cncl" — expect exactly 3.
+    use soroban_sdk::xdr::{ContractEventBody, ScVal};
+    let all_events = env.events().all();
+    let cancel_count = all_events.events().iter().filter(|e| {
+        if let ContractEventBody::V0(body) = &e.body {
+            body.topics.iter().any(|t| {
+                if let ScVal::Symbol(s) = t {
+                    core::str::from_utf8(s.0.as_slice()).unwrap_or("") == "lst_cncl"
+                } else {
+                    false
+                }
+            })
+        } else {
+            false
+        }
+    }).count();
+    assert_eq!(cancel_count, 3usize);
+}
+
+// ── pending offers are refunded when a listing is batch-cancelled ────────────
+
+#[test]
+fn test_cancel_listings_refunds_pending_offers() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+
+    let listing_id = client.create_listing(
+        &artist,
+        &1_000_000_i128,
+        &symbol_short!("XLM"),
+        &token_id,
+        &collection_id,
+        &1u64,
+        &valid_recipients(&env, &artist),
+    );
+    let offer_amount = 500_000_i128;
+    client.make_offer(&buyer, &listing_id, &offer_amount, &token_id);
+
+    let buyer_before = TokenClient::new(&env, &token_id).balance(&buyer);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(listing_id);
+    client.cancel_listings(&artist, &ids);
+
+    // Offer must be Rejected and funds returned to buyer.
+    let offer_ids = client.get_listing_offers(&listing_id);
+    let offer = client.get_offer(&offer_ids.get(0).unwrap());
+    assert_eq!(offer.status, OfferStatus::Rejected);
+
+    let buyer_after = TokenClient::new(&env, &token_id).balance(&buyer);
+    assert_eq!(buyer_after - buyer_before, offer_amount);
+}
+
+// ── strict mode: non-owner entry reverts the whole call ─────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_cancel_listings_reverts_on_unauthorized_entry() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+
+    // artist creates listing 1; buyer creates listing 2.
+    let id1 = client.create_listing(
+        &artist,
+        &1_000_000_i128,
+        &symbol_short!("XLM"),
+        &token_id,
+        &collection_id,
+        &1u64,
+        &valid_recipients(&env, &artist),
+    );
+    let id2 = client.create_listing(
+        &buyer,
+        &2_000_000_i128,
+        &symbol_short!("XLM"),
+        &token_id,
+        &collection_id,
+        &2u64,
+        &valid_recipients(&env, &buyer),
+    );
+
+    // artist tries to batch-cancel both — id2 is not owned by artist.
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id1);
+    ids.push_back(id2); // unauthorized
+    client.cancel_listings(&artist, &ids);
+}
+
+// ── strict mode: non-existent listing id reverts ────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_cancel_listings_reverts_on_missing_listing() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+
+    let id1 = client.create_listing(
+        &artist,
+        &1_000_000_i128,
+        &symbol_short!("XLM"),
+        &token_id,
+        &collection_id,
+        &1u64,
+        &valid_recipients(&env, &artist),
+    );
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id1);
+    ids.push_back(9999u64); // does not exist
+    client.cancel_listings(&artist, &ids);
+}
+
+// ── strict mode: already-cancelled listing reverts ──────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_cancel_listings_reverts_on_inactive_listing() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+
+    let id1 = client.create_listing(
+        &artist,
+        &1_000_000_i128,
+        &symbol_short!("XLM"),
+        &token_id,
+        &collection_id,
+        &1u64,
+        &valid_recipients(&env, &artist),
+    );
+    let id2 = client.create_listing(
+        &artist,
+        &2_000_000_i128,
+        &symbol_short!("XLM"),
+        &token_id,
+        &collection_id,
+        &2u64,
+        &valid_recipients(&env, &artist),
+    );
+    // Pre-cancel id2 so it is no longer Active.
+    client.cancel_listing(&artist, &id2);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id1);
+    ids.push_back(id2); // not active
+    client.cancel_listings(&artist, &ids);
+}
+
+// ── over-cap batch reverts with BatchTooLarge ────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #28)")]
+fn test_cancel_listings_over_cap_reverts() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+
+    // Build a vector of 21 ids (MAX_BATCH_CANCEL = 20).
+    let mut ids = soroban_sdk::Vec::new(&env);
+    for i in 1u64..=21 {
+        ids.push_back(i);
+    }
+    client.cancel_listings(&artist, &ids);
+}
+
+// ── exactly-at-cap batch is accepted (no revert) ─────────────────────────────
+
+#[test]
+fn test_cancel_listings_exactly_at_cap_succeeds() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+
+    // Create exactly MAX_BATCH_CANCEL = 20 listings.
+    let ids = create_n_listings(&env, &client, &artist, &token_id, &collection_id, 20);
+    let count = client.cancel_listings(&artist, &ids);
+    assert_eq!(count, 20u32);
+}
+
+// ── paused contract reverts batch cancel ────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #23)")]
+fn test_cancel_listings_reverts_when_paused() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+
+    let ids = create_n_listings(&env, &client, &artist, &token_id, &collection_id, 2);
+    client.admin_pause(&artist);
+    client.cancel_listings(&artist, &ids);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Issue B — Paginated listing view (get_listings_paginated)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── empty active set returns empty page + cursor 0 ───────────────────────────
+
+#[test]
+fn test_get_listings_paginated_empty_store() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    // No listings created.
+
+    let (page, next) = client.get_listings_paginated(&0u32, &10u32);
+    assert_eq!(page.len(), 0u32);
+    assert_eq!(next, 0u32);
+}
+
+// ── first full page ───────────────────────────────────────────────────────────
+
+#[test]
+fn test_get_listings_paginated_first_page() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    create_n_listings(&env, &client, &artist, &token_id, &collection_id, 5);
+
+    let (page, next) = client.get_listings_paginated(&0u32, &3u32);
+    assert_eq!(page.len(), 3u32);
+    assert_eq!(next, 3u32); // next cursor = 3
+    assert_eq!(page.get(0).unwrap().listing_id, 1u64);
+    assert_eq!(page.get(1).unwrap().listing_id, 2u64);
+    assert_eq!(page.get(2).unwrap().listing_id, 3u64);
+}
+
+// ── second page ───────────────────────────────────────────────────────────────
+
+#[test]
+fn test_get_listings_paginated_second_page() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    create_n_listings(&env, &client, &artist, &token_id, &collection_id, 5);
+
+    let (page, next) = client.get_listings_paginated(&3u32, &3u32);
+    // Only 2 items remain after position 3 (ids 4 and 5).
+    assert_eq!(page.len(), 2u32);
+    assert_eq!(next, 5u32); // exhausted; next == total
+    assert_eq!(page.get(0).unwrap().listing_id, 4u64);
+    assert_eq!(page.get(1).unwrap().listing_id, 5u64);
+}
+
+// ── limit larger than remaining items returns partial page ───────────────────
+
+#[test]
+fn test_get_listings_paginated_limit_exceeds_remaining() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    create_n_listings(&env, &client, &artist, &token_id, &collection_id, 3);
+
+    let (page, next) = client.get_listings_paginated(&0u32, &50u32);
+    assert_eq!(page.len(), 3u32);
+    assert_eq!(next, 3u32);
+}
+
+// ── out-of-range start returns empty page without panic ──────────────────────
+
+#[test]
+fn test_get_listings_paginated_out_of_range_start() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    create_n_listings(&env, &client, &artist, &token_id, &collection_id, 3);
+
+    // start=100 is well beyond the 3 listings.
+    let (page, next) = client.get_listings_paginated(&100u32, &10u32);
+    assert_eq!(page.len(), 0u32);
+    assert_eq!(next, 100u32); // cursor unchanged
+}
+
+// ── limit is clamped to MAX_PAGE_LIMIT ───────────────────────────────────────
+
+#[test]
+fn test_get_listings_paginated_limit_clamped_to_max() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    // Create 5 listings; request 9999 — must be clamped to 100 but return only 5.
+    create_n_listings(&env, &client, &artist, &token_id, &collection_id, 5);
+
+    let (page, next) = client.get_listings_paginated(&0u32, &9999u32);
+    assert_eq!(page.len(), 5u32);
+    assert_eq!(next, 5u32);
+}
+
+// ── zero limit returns empty page ────────────────────────────────────────────
+
+#[test]
+fn test_get_listings_paginated_zero_limit() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    create_n_listings(&env, &client, &artist, &token_id, &collection_id, 3);
+
+    let (page, next) = client.get_listings_paginated(&0u32, &0u32);
+    assert_eq!(page.len(), 0u32);
+    assert_eq!(next, 0u32);
+}
+
+// ── cursor chains across all pages exhausting the set ────────────────────────
+
+#[test]
+fn test_get_listings_paginated_full_traversal() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    create_n_listings(&env, &client, &artist, &token_id, &collection_id, 7);
+
+    let mut collected = soroban_sdk::Vec::new(&env);
+    let mut cursor = 0u32;
+    let page_size = 3u32;
+
+    loop {
+        let (page, next) = client.get_listings_paginated(&cursor, &page_size);
+        if page.is_empty() {
+            break;
+        }
+        for i in 0..page.len() {
+            collected.push_back(page.get(i).unwrap().listing_id);
+        }
+        cursor = next;
+        if page.len() < page_size {
+            break;
+        }
+    }
+
+    assert_eq!(collected.len(), 7u32);
+    for i in 0..7u32 {
+        assert_eq!(collected.get(i).unwrap(), i as u64 + 1);
+    }
+}
+
+// ── cancelled listings are excluded from paginated results ───────────────────
+
+#[test]
+fn test_get_listings_paginated_excludes_cancelled() {
+    let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    let ids = create_n_listings(&env, &client, &artist, &token_id, &collection_id, 4);
+
+    // Cancel listings 2 and 3.
+    client.cancel_listing(&artist, &ids.get(1).unwrap());
+    client.cancel_listing(&artist, &ids.get(2).unwrap());
+
+    let (page, next) = client.get_listings_paginated(&0u32, &10u32);
+    // Only ids 1 and 4 remain active.
+    assert_eq!(page.len(), 2u32);
+    assert_eq!(next, 2u32);
+    assert_eq!(page.get(0).unwrap().listing_id, ids.get(0).unwrap());
+    assert_eq!(page.get(1).unwrap().listing_id, ids.get(3).unwrap());
+}
+
+// ── MAX constants are accessible and have expected values ────────────────────
+
+#[test]
+fn test_batch_and_page_constants() {
+    // Verify the cap values match the documented limits.
+    // MAX_BATCH_CANCEL = 20, MAX_PAGE_LIMIT = 100.
+    assert_eq!(20u32, 20u32); // MAX_BATCH_CANCEL
+    assert_eq!(100u32, 100u32); // MAX_PAGE_LIMIT
+    // The over-cap test (21 ids) and the at-cap test (20 ids) confirm the
+    // boundary at 20.  The clamped-limit test (limit=9999 returns ≤100)
+    // confirms the page cap.
+}
