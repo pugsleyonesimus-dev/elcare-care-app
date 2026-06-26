@@ -1669,13 +1669,273 @@ fn test_buy_already_sold_listing_fails() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #6)")]
+#[should_panic(expected = "Error(Contract, #29)")]
 fn test_buy_own_listing_fails() {
     let (env, client, artist, _, token_id, _contract_id, collection_id) = setup();
     client.set_admin(&artist);
     client.add_token_to_whitelist(&token_id);
     let id = create_test_listing(&env, &client, &artist, &token_id);
+    // Artist (listing creator) must not be able to buy their own listing.
+    // Expect SelfPurchaseNotAllowed = error #29.
     client.buy_artwork(&artist, &id);
+}
+
+// ── Task (a): Self-purchase guard — dedicated SelfPurchaseNotAllowed error ───
+
+/// Confirms the revert carries the dedicated SelfPurchaseNotAllowed code (#29),
+/// not the legacy CannotBuyOwnListing (#6), so clients can decode it reliably.
+#[test]
+#[should_panic(expected = "Error(Contract, #29)")]
+fn test_self_purchase_not_allowed_error_code() {
+    let (env, client, artist, _, token_id, _contract_id, _collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    let id = create_test_listing(&env, &client, &artist, &token_id);
+    client.buy_artwork(&artist, &id);
+}
+
+/// A third-party buyer who is not the artist must still be able to purchase.
+#[test]
+fn test_third_party_buyer_not_blocked() {
+    let (env, client, artist, buyer, token_id, _contract_id, _collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    let id = create_test_listing(&env, &client, &artist, &token_id);
+    assert!(client.buy_artwork(&buyer, &id));
+    let listing = client.get_listing(&id);
+    assert_eq!(listing.status, ListingStatus::Sold);
+    assert_eq!(listing.owner, Some(buyer));
+}
+
+// ── Task (b): ProtocolFeeCollected event ─────────────────────────────────────
+
+/// buy_artwork settlement must emit a ProtocolFeeCollected event whose
+/// `amount` equals exactly fee_bps % of the sale price and whose `treasury`
+/// matches the configured treasury address.
+#[test]
+fn test_buy_artwork_emits_protocol_fee_collected_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    let treasury = Address::generate(&env);
+    client.set_treasury(&artist, &treasury);
+
+    // Set fee first, then create listing with recipients that leave room:
+    // 500 bps protocol fee + 9500 bps recipient = 10000 bps total (valid).
+    client.set_protocol_fee(&artist, &500u32);
+    let price = 10_000_000_i128;
+    let recipients = vec![
+        &env,
+        Recipient {
+            address: artist.clone(),
+            percentage: 9_500, // 9500 bps leaves 500 bps for protocol fee
+        },
+    ];
+    let id = client.create_listing(
+        &artist,
+        &price,
+        &symbol_short!("XLM"),
+        &token_id,
+        &collection_id,
+        &1u64,
+        &recipients,
+        &None::<u64>,
+    );
+
+    client.buy_artwork(&buyer, &id);
+
+    // Expected fee: price * 500 / 10_000 = 500_000
+    let expected_fee: i128 = price * 500 / 10_000;
+
+    // Scan emitted events for ProtocolFeeCollected (topic symbol "fee_cltd")
+    let all_events = env.events().all();
+    let fee_event = all_events.iter().find(|e| {
+        use soroban_sdk::xdr::{ContractEventBody, ScVal};
+        if let ContractEventBody::V0(body) = &e.body {
+            body.topics.iter().any(|t| {
+                if let ScVal::Symbol(s) = t {
+                    core::str::from_utf8(s.0.as_slice()).unwrap_or("") == "fee_cltd"
+                } else {
+                    false
+                }
+            })
+        } else {
+            false
+        }
+    });
+    assert!(fee_event.is_some(), "ProtocolFeeCollected event not emitted from buy_artwork");
+
+    // Verify treasury balance received exactly expected_fee
+    let token = TokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&treasury), expected_fee);
+}/// accept_offer settlement must also emit ProtocolFeeCollected.
+#[test]
+fn test_accept_offer_emits_protocol_fee_collected_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    let treasury = Address::generate(&env);
+    client.set_treasury(&artist, &treasury);
+
+    // Set fee before creating listing so it's snapshotted into the listing.
+    // 500 bps protocol fee + 9500 bps recipient = 10000 bps (valid).
+    client.set_protocol_fee(&artist, &500u32);
+    let recipients = vec![
+        &env,
+        Recipient {
+            address: artist.clone(),
+            percentage: 9_500,
+        },
+    ];
+    let listing_id = client.create_listing(
+        &artist,
+        &10_000_000_i128,
+        &symbol_short!("XLM"),
+        &token_id,
+        &collection_id,
+        &1u64,
+        &recipients,
+        &None::<u64>,
+    );
+
+    let offer_amount = 8_000_000_i128;
+    let offer_id = client.make_offer(&buyer, &listing_id, &offer_amount, &token_id);
+    client.accept_offer(&artist, &offer_id);
+
+    // Expected fee: offer_amount * 500 / 10_000 = 400_000
+    let expected_fee: i128 = offer_amount * 500 / 10_000;
+
+    let all_events = env.events().all();
+    let fee_event = all_events.iter().find(|e| {
+        use soroban_sdk::xdr::{ContractEventBody, ScVal};
+        if let ContractEventBody::V0(body) = &e.body {
+            body.topics.iter().any(|t| {
+                if let ScVal::Symbol(s) = t {
+                    core::str::from_utf8(s.0.as_slice()).unwrap_or("") == "fee_cltd"
+                } else {
+                    false
+                }
+            })
+        } else {
+            false
+        }
+    });
+    assert!(fee_event.is_some(), "ProtocolFeeCollected event not emitted from accept_offer");
+
+    let token = TokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&treasury), expected_fee);
+}
+
+/// finalize_auction settlement must also emit ProtocolFeeCollected.
+#[test]
+fn test_finalize_auction_emits_protocol_fee_collected_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    let treasury = Address::generate(&env);
+    client.set_treasury(&artist, &treasury);
+
+    // Set fee before creating auction so it's snapshotted.
+    // Recipients get 9500 bps; 500 bps reserved for protocol fee.
+    client.set_protocol_fee(&artist, &500u32);
+    let recipients = vec![
+        &env,
+        Recipient {
+            address: artist.clone(),
+            percentage: 9_500,
+        },
+    ];
+    let auction_id = client.create_auction(
+        &artist,
+        &token_id,
+        &collection_id,
+        &1u64,
+        &1_000_000_i128,
+        &3600u64,
+        &recipients,
+    );
+
+    let bid_amount = 2_000_000_i128;
+    client.place_bid(&buyer, &auction_id, &bid_amount);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 3601);
+    client.finalize_auction(&buyer, &auction_id);
+
+    // Expected fee: bid_amount * 500 / 10_000 = 100_000
+    let expected_fee: i128 = bid_amount * 500 / 10_000;
+
+    let all_events = env.events().all();
+    let fee_event = all_events.iter().find(|e| {
+        use soroban_sdk::xdr::{ContractEventBody, ScVal};
+        if let ContractEventBody::V0(body) = &e.body {
+            body.topics.iter().any(|t| {
+                if let ScVal::Symbol(s) = t {
+                    core::str::from_utf8(s.0.as_slice()).unwrap_or("") == "fee_cltd"
+                } else {
+                    false
+                }
+            })
+        } else {
+            false
+        }
+    });
+    assert!(fee_event.is_some(), "ProtocolFeeCollected event not emitted from finalize_auction");
+
+    let token = TokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&treasury), expected_fee);
+}
+
+/// No ProtocolFeeCollected event is emitted when treasury is not configured.
+#[test]
+fn test_no_fee_event_without_treasury() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    // No treasury set — fee has nowhere to go, no event should fire.
+
+    client.set_protocol_fee(&artist, &500u32);
+    let recipients = vec![
+        &env,
+        Recipient {
+            address: artist.clone(),
+            percentage: 9_500,
+        },
+    ];
+    let id = client.create_listing(
+        &artist,
+        &10_000_000_i128,
+        &symbol_short!("XLM"),
+        &token_id,
+        &collection_id,
+        &1u64,
+        &recipients,
+        &None::<u64>,
+    );
+    client.buy_artwork(&buyer, &id);
+
+    let all_events = env.events().all();
+    let fee_event = all_events.iter().find(|e| {
+        use soroban_sdk::xdr::{ContractEventBody, ScVal};
+        if let ContractEventBody::V0(body) = &e.body {
+            body.topics.iter().any(|t| {
+                if let ScVal::Symbol(s) = t {
+                    core::str::from_utf8(s.0.as_slice()).unwrap_or("") == "fee_cltd"
+                } else {
+                    false
+                }
+            })
+        } else {
+            false
+        }
+    });
+    assert!(fee_event.is_none(), "ProtocolFeeCollected must not fire without a treasury");
 }
 
 // â”€â”€ update_listing recipient validation (Issue #175) â”€â”€â”€â”€â”€â”€â”€â”€â”€

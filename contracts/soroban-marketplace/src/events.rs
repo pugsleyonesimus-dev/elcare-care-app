@@ -1,6 +1,6 @@
 // events.rs — Defines all contract event schemas for ELCARE-HUB Marketplace
 
-use soroban_sdk::{contracttype, symbol_short, Address, Bytes, Env, Symbol};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol};
 
 // Versioned event topics as Symbol constants
 pub const LISTING_CREATED: Symbol = symbol_short!("lst_crtd");
@@ -9,6 +9,7 @@ pub const LISTING_CANCELLED: Symbol = symbol_short!("lst_cncl");
 pub const LISTING_UPDATED: Symbol = symbol_short!("lst_updt");
 pub const BID_PLACED: Symbol = symbol_short!("bid_plcd");
 pub const AUCTION_RESOLVED: Symbol = symbol_short!("auc_rslv");
+pub const AUCTION_CREATED: Symbol = symbol_short!("auc_crtd");
 pub const OFFER_MADE: Symbol = symbol_short!("ofr_made");
 pub const OFFER_ACCEPTED: Symbol = symbol_short!("ofr_accp");
 pub const OFFER_REJECTED: Symbol = symbol_short!("ofr_rjct");
@@ -125,7 +126,7 @@ impl ListingCancelledEvent {
 impl AuctionCreatedEvent {
     #[allow(deprecated)]
     pub fn publish(self, env: &Env) {
-        env.events().publish((symbol_short!("auc_crtd"),), self);
+        env.events().publish((AUCTION_CREATED,), self);
     }
 }
 
@@ -331,6 +332,37 @@ impl AdminTransferredEvent {
     #[allow(deprecated)]
     pub fn publish(self, env: &Env) {
         env.events().publish((ADMIN_TRANSFERRED,), self);
+    }
+}
+
+// ── Protocol Fee Event ────────────────────────────────────────────────────────
+//
+// Emitted from every settlement path (buy_artwork, finalize_auction,
+// accept_offer) so the treasury's revenue is independently observable
+// on-chain without requiring indexer inference.
+
+/// Emitted once per settlement with the exact protocol-fee amount transferred
+/// to the treasury.  Carries enough context to identify the originating trade
+/// and reconcile treasury balances in real time.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProtocolFeeCollectedEvent {
+    /// ID of the listing (for buy_artwork / accept_offer) or auction
+    /// (for finalize_auction) that generated the fee.
+    pub listing_id: u64,
+    /// Raw token amount transferred to the treasury.  Zero when no treasury is
+    /// configured or when the computed fee rounds down to zero.
+    pub amount: i128,
+    /// The payment token from which the fee was deducted.
+    pub token: Address,
+    /// The treasury address that received the fee.
+    pub treasury: Address,
+}
+
+impl ProtocolFeeCollectedEvent {
+    #[allow(deprecated)]
+    pub fn publish(self, env: &Env) {
+        env.events().publish((PROTOCOL_FEE_COLLECTED,), self);
     }
 }
 
