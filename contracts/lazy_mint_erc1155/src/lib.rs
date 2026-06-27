@@ -12,7 +12,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token::TokenClient,
-    xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol, Vec,
+    xdr::ToXdr, Address, Bytes, BytesN, Env, String, Vec,
 };
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -236,14 +236,9 @@ impl LazyMint1155 {
             .persistent()
             .extend_ttl(&minted_key, 50_000, 100_000);
 
-        // Emit TransferSingle event for redeem (from zero address)
-        #[allow(deprecated)]
+        let creator: Address = env.storage().instance().get(&DataKey::Creator).unwrap();
         env.events().publish(
-            (
-                Symbol::new(&env, "TransferSingle"),
-                buyer.clone(),
-                buyer.clone(),
-            ),
+            (symbol_short!("mint"), creator, buyer.clone()),
             (voucher.token_id, amount),
         );
         Ok(())
@@ -298,18 +293,6 @@ impl LazyMint1155 {
         if token_ids.len() != amounts.len() {
             return Err(Error::LengthMismatch);
         }
-
-        // Emit TransferBatch event (ERC-1155 standard)
-        #[allow(deprecated)]
-        env.events().publish(
-            (
-                Symbol::new(&env, "TransferBatch"),
-                spender.clone(),
-                from.clone(),
-                to.clone(),
-            ),
-            (token_ids.clone(), amounts.clone()),
-        );
 
         for (id, amount) in token_ids.iter().zip(amounts.iter()) {
             Self::_transfer(&env, &from, &to, id, amount)?;
@@ -375,14 +358,8 @@ impl LazyMint1155 {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::TotalSupply(token_id), 50_000, 100_000);
-        // Emit TransferSingle event for burn (to zero address)
-        #[allow(deprecated)]
         env.events().publish(
-            (
-                Symbol::new(&env, "TransferSingle"),
-                from.clone(),
-                from.clone(),
-            ),
+            (symbol_short!("burn"), from.clone()),
             (token_id, amount),
         );
         Ok(())
@@ -596,15 +573,8 @@ impl LazyMint1155 {
             50_000,
             100_000,
         );
-        // Emit TransferSingle event with operator (ERC-1155 standard)
-        #[allow(deprecated)]
         env.events().publish(
-            (
-                Symbol::new(env, "TransferSingle"),
-                operator.clone(),
-                from.clone(),
-                to.clone(),
-            ),
+            (symbol_short!("transfer"), from.clone(), to.clone()),
             (token_id, amount),
         );
         Ok(())
@@ -648,10 +618,8 @@ impl LazyMint1155 {
             50_000,
             100_000,
         );
-        // Emit TransferSingle event (ERC-1155 standard) - operator is from for direct transfers
-        #[allow(deprecated)]
         env.events().publish(
-            (Symbol::new(env, "TransferSingle"), from.clone(), to.clone()),
+            (symbol_short!("transfer"), from.clone(), to.clone()),
             (token_id, amount),
         );
         Ok(())

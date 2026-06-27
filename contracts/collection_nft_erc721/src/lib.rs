@@ -127,9 +127,10 @@ impl NormalNFT721 {
 
         Self::_do_mint(&env, &to, token_id, &uri);
 
-        // keep creator's auth info in context — emit creator address in event
-        env.events()
-            .publish((symbol_short!("mint"), to.clone()), (creator, token_id));
+        env.events().publish(
+            (symbol_short!("mint"), creator.clone(), to.clone()),
+            (token_id, 1u128),
+        );
         Ok(token_id)
     }
 
@@ -137,7 +138,7 @@ impl NormalNFT721 {
     /// Optimized to minimize storage I/O - reads storage once, mints in memory, writes back once.
     pub fn batch_mint(env: Env, to: Address, uris: Vec<String>) -> Result<(), Error> {
         Self::extend_instance_ttl(&env);
-        Self::only_creator(&env)?;
+        let creator = Self::only_creator(&env)?;
 
         let uris_len = uris.len();
         if uris_len == 0 {
@@ -222,12 +223,10 @@ impl NormalNFT721 {
             TTL_BUMP,
         );
 
-        // Emit individual mint events (as per ERC-721 standard)
-        let creator = Self::only_creator(&env)?;
         for token_id in minted_ids.iter() {
             env.events().publish(
-                (symbol_short!("mint"), to.clone()),
-                (creator.clone(), token_id),
+                (symbol_short!("mint"), creator.clone(), to.clone()),
+                (token_id, 1u128),
             );
         }
 
@@ -561,8 +560,8 @@ impl NormalNFT721 {
             .persistent()
             .extend_ttl(&DataKey::Owner(token_id), TTL_THRESHOLD, TTL_BUMP);
         env.events().publish(
-            (symbol_short!("transfer"), from.clone()),
-            (to.clone(), token_id),
+            (symbol_short!("transfer"), from.clone(), to.clone()),
+            (token_id, 1u128),
         );
         Ok(())
     }

@@ -33,6 +33,16 @@ pub fn set_platform_fee(env: &Env, receiver: &Address, bps: u32) {
     env.storage().instance().set(&DataKey::PlatformFeeBps, &bps);
 }
 
+pub fn set_deploy_fee_only(env: &Env, fee: u32) {
+    env.storage().instance().set(&DataKey::PlatformFeeBps, &fee);
+}
+
+pub fn set_treasury_only(env: &Env, treasury: &Address) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PlatformFeeReceiver, treasury);
+}
+
 pub fn get_platform_fee(env: &Env) -> (Address, u32) {
     (
         env.storage()

@@ -8,6 +8,8 @@ pub enum Error {
     NotInitialized = 2,
     NotAdmin = 3,
     WasmHashNotSet = 4,
+    /// name or symbol exceeds allowed byte length
+    InvalidCollectionMetadata = 5,
 }
 
 /// Which of the four collection types was deployed.

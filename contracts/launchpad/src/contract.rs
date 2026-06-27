@@ -29,6 +29,24 @@ use crate::{
     types::{CollectionKind, CollectionRecord, Error},
 };
 
+// ─── Metadata validation (fix #47) ───────────────────────────────────────────
+const MAX_NAME_LEN: u32 = 64;
+const MAX_SYMBOL_LEN: u32 = 16;
+
+fn validate_name(name: &String) -> Result<(), Error> {
+    if name.len() == 0 || name.len() > MAX_NAME_LEN {
+        return Err(Error::InvalidCollectionMetadata);
+    }
+    Ok(())
+}
+
+fn validate_symbol(symbol: &String) -> Result<(), Error> {
+    if symbol.len() == 0 || symbol.len() > MAX_SYMBOL_LEN {
+        return Err(Error::InvalidCollectionMetadata);
+    }
+    Ok(())
+}
+
 // ─── Cross-contract clients ───────────────────────────────────────────────────
 // We define minimal interfaces for the four collection types so the factory
 // can call `initialize` on freshly deployed contracts in the same transaction.
@@ -164,7 +182,7 @@ impl Launchpad {
     pub fn deploy_normal_721(
         env: Env,
         creator: Address,
-        currency: Address, // [NEW] SAC address for fee payment
+        currency: Address,
         name: String,
         symbol: String,
         max_supply: u64,
@@ -175,7 +193,9 @@ impl Launchpad {
         storage::extend_instance_ttl(&env);
         creator.require_auth();
 
-        // [FEE] Collect deployment fee (#54)
+        validate_name(&name)?;
+        validate_symbol(&symbol)?;
+
         let (receiver, fee) = storage::get_platform_fee(&env);
         if fee > 0 {
             soroban_sdk::token::TokenClient::new(&env, &currency).transfer(
@@ -183,6 +203,7 @@ impl Launchpad {
                 &receiver,
                 &(fee as i128),
             );
+            events::publish_deployment_fee_collected(&env, &creator, &receiver, fee as i128, &currency);
         }
 
         let wasm = storage::get_wasm_normal_721(&env).ok_or(Error::WasmHashNotSet)?;
@@ -223,7 +244,8 @@ impl Launchpad {
         storage::extend_instance_ttl(&env);
         creator.require_auth();
 
-        // [FEE] Collect deployment fee (#54)
+        validate_name(&name)?;
+
         let (receiver, fee) = storage::get_platform_fee(&env);
         if fee > 0 {
             soroban_sdk::token::TokenClient::new(&env, &currency).transfer(
@@ -231,6 +253,7 @@ impl Launchpad {
                 &receiver,
                 &(fee as i128),
             );
+            events::publish_deployment_fee_collected(&env, &creator, &receiver, fee as i128, &currency);
         }
 
         let wasm = storage::get_wasm_normal_1155(&env).ok_or(Error::WasmHashNotSet)?;
@@ -274,7 +297,9 @@ impl Launchpad {
         storage::extend_instance_ttl(&env);
         creator.require_auth();
 
-        // [FEE] Collect deployment fee (#54)
+        validate_name(&name)?;
+        validate_symbol(&symbol)?;
+
         let (receiver, fee) = storage::get_platform_fee(&env);
         if fee > 0 {
             soroban_sdk::token::TokenClient::new(&env, &currency).transfer(
@@ -282,6 +307,7 @@ impl Launchpad {
                 &receiver,
                 &(fee as i128),
             );
+            events::publish_deployment_fee_collected(&env, &creator, &receiver, fee as i128, &currency);
         }
 
         let wasm = storage::get_wasm_lazy_721(&env).ok_or(Error::WasmHashNotSet)?;
@@ -322,7 +348,8 @@ impl Launchpad {
         storage::extend_instance_ttl(&env);
         creator.require_auth();
 
-        // [FEE] Collect deployment fee (#54)
+        validate_name(&name)?;
+
         let (receiver, fee) = storage::get_platform_fee(&env);
         if fee > 0 {
             soroban_sdk::token::TokenClient::new(&env, &currency).transfer(
@@ -330,6 +357,7 @@ impl Launchpad {
                 &receiver,
                 &(fee as i128),
             );
+            events::publish_deployment_fee_collected(&env, &creator, &receiver, fee as i128, &currency);
         }
 
         let wasm = storage::get_wasm_lazy_1155(&env).ok_or(Error::WasmHashNotSet)?;
@@ -367,6 +395,22 @@ impl Launchpad {
         storage::extend_instance_ttl(&env);
         storage::require_admin(&env)?;
         storage::set_platform_fee(&env, &receiver, fee_bps);
+        Ok(())
+    }
+
+    /// Set only the flat deploy fee (in stroops or token smallest unit).
+    pub fn set_deploy_fee(env: Env, fee: u32) -> Result<(), Error> {
+        storage::extend_instance_ttl(&env);
+        storage::require_admin(&env)?;
+        storage::set_deploy_fee_only(&env, fee);
+        Ok(())
+    }
+
+    /// Set only the treasury address that receives deploy fees.
+    pub fn set_treasury(env: Env, treasury: Address) -> Result<(), Error> {
+        storage::extend_instance_ttl(&env);
+        storage::require_admin(&env)?;
+        storage::set_treasury_only(&env, &treasury);
         Ok(())
     }
 

@@ -254,8 +254,11 @@ impl LazyMint721 {
                 .set(&DataKey::NextTokenId, &(token_id + 1));
         }
 
-        env.events()
-            .publish((symbol_short!("redeem"), buyer), token_id);
+        let creator: Address = env.storage().instance().get(&DataKey::Creator).unwrap();
+        env.events().publish(
+            (symbol_short!("mint"), creator, buyer.clone()),
+            (token_id, 1u128),
+        );
         Ok(token_id)
     }
 
@@ -523,8 +526,8 @@ impl LazyMint721 {
             .persistent()
             .extend_ttl(&DataKey::Owner(token_id), TTL_THRESHOLD, TTL_BUMP);
         env.events().publish(
-            (symbol_short!("transfer"), from.clone()),
-            (to.clone(), token_id),
+            (symbol_short!("transfer"), from.clone(), to.clone()),
+            (token_id, 1u128),
         );
         Ok(())
     }

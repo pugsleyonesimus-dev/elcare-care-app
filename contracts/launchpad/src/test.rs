@@ -929,3 +929,412 @@ fn deployed_lazy_721_rejects_expired_voucher() {
         "expired voucher must return VoucherExpired"
     );
 }
+
+// ─── Issue #47 — Name/symbol length validation ───────────────────────────────
+
+#[test]
+fn deploy_with_name_too_long_fails() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    // 65-byte name exceeds MAX_NAME_LEN (64)
+    let long_name   = String::from_str(&env, "AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFGGGG");
+    let royalty_receiver = Address::generate(&env);
+    let currency         = Address::generate(&env);
+    let salt             = BytesN::from_array(&env, &[0xD1u8; 32]);
+
+    let result = client.try_deploy_normal_721(
+        &creator,
+        &currency,
+        &long_name,
+        &String::from_str(&env, "OK"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidCollectionMetadata)));
+}
+
+#[test]
+fn deploy_with_symbol_too_long_fails() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    // 17-byte symbol exceeds MAX_SYMBOL_LEN (16)
+    let long_sym         = String::from_str(&env, "TOOLONGSYMBOL1234X");
+    let royalty_receiver = Address::generate(&env);
+    let currency         = Address::generate(&env);
+    let salt             = BytesN::from_array(&env, &[0xD2u8; 32]);
+
+    let result = client.try_deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "Valid Name"),
+        &long_sym,
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidCollectionMetadata)));
+}
+
+// ─── Issue #48 — Factory integration tests: deploy each kind and mint ─────────
+//
+// Each test deploys one collection kind through the factory, mints at least one
+// token, and asserts both the registry record and the token ownership.
+
+use soroban_sdk::Bytes;
+use soroban_sdk::xdr::ToXdr;
+
+// ── Cross-contract clients for minting ───────────────────────────────────────
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Normal721Error {
+    AlreadyInitialized  = 1,
+    NotInitialized      = 2,
+    NotOwner            = 3,
+    NotApproved         = 4,
+    TokenNotFound       = 5,
+    MaxSupplyReached    = 6,
+    NotCreator          = 7,
+    InsufficientBalance = 8,
+}
+
+#[contractclient(name = "Normal721CollClient")]
+pub trait INormal721Coll {
+    fn mint(env: Env, to: Address, uri: String) -> Result<u64, Normal721Error>;
+    fn balance_of(env: Env, owner: Address) -> u64;
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Normal1155Error {
+    AlreadyInitialized  = 1,
+    NotInitialized      = 2,
+    NotApproved         = 3,
+    InsufficientBalance = 4,
+    LengthMismatch      = 5,
+    NotCreator          = 6,
+}
+
+#[contractclient(name = "Normal1155CollClient")]
+pub trait INormal1155Coll {
+    fn mint_new(env: Env, to: Address, amount: u128, uri: String) -> Result<u64, Normal1155Error>;
+    fn balance_of(env: Env, account: Address, token_id: u64) -> u128;
+}
+
+// Reuse MintVoucher + LazyError already defined above for Lazy721.
+#[contractclient(name = "Lazy721CollClient")]
+pub trait ILazy721Coll {
+    fn redeem(
+        env: Env,
+        buyer: Address,
+        voucher: MintVoucher,
+        signature: BytesN<64>,
+    ) -> Result<u64, LazyError>;
+    fn balance_of(env: Env, owner: Address) -> u64;
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Lazy1155Error {
+    AlreadyInitialized       = 1,
+    NotInitialized           = 2,
+    NotApproved              = 3,
+    InsufficientBalance      = 4,
+    LengthMismatch           = 5,
+    VoucherExpired           = 6,
+    ExceedsVoucherMax        = 7,
+    NotCreator               = 8,
+    EditionNotRegistered     = 9,
+    EditionAlreadyRegistered = 10,
+    InvalidSignature         = 11,
+    MaxSupplyReached         = 12,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct MintVoucher1155 {
+    pub token_id:       u64,
+    pub buyer_quota:    u128,
+    pub price_per_unit: i128,
+    pub currency:       Address,
+    pub uri:            String,
+    pub uri_hash:       BytesN<32>,
+    pub valid_until:    u64,
+}
+
+#[contractclient(name = "Lazy1155CollClient")]
+pub trait ILazy1155Coll {
+    fn register_edition(env: Env, token_id: u64, max_supply: u128) -> Result<(), Lazy1155Error>;
+    fn redeem(
+        env: Env,
+        buyer: Address,
+        voucher: MintVoucher1155,
+        amount: u128,
+        signature: BytesN<64>,
+    ) -> Result<(), Lazy1155Error>;
+    fn balance_of(env: Env, account: Address, token_id: u64) -> u128;
+}
+
+// ── Digest helpers (mirror contract logic so tests can sign real vouchers) ────
+
+fn lazy721_digest(
+    env: &Env,
+    coll: &Address,
+    token_id: u64,
+    price: i128,
+    valid_until: u64,
+    uri_hash: &BytesN<32>,
+    currency: &Address,
+) -> BytesN<32> {
+    let mut raw = Bytes::new(env);
+    raw.append(&coll.to_xdr(env));
+    raw.extend_from_array(&token_id.to_be_bytes());
+    raw.extend_from_array(&price.to_be_bytes());
+    raw.extend_from_array(&valid_until.to_be_bytes());
+    let uri_hash_bytes: Bytes = uri_hash.clone().into();
+    raw.append(&uri_hash_bytes);
+    raw.append(&currency.to_xdr(env));
+    env.crypto().sha256(&raw)
+}
+
+fn lazy1155_digest(
+    env: &Env,
+    coll: &Address,
+    token_id: u64,
+    buyer_quota: u128,
+    price_per_unit: i128,
+    valid_until: u64,
+    uri_hash: &BytesN<32>,
+    currency: &Address,
+) -> BytesN<32> {
+    let mut raw = Bytes::new(env);
+    raw.append(&coll.to_xdr(env));
+    raw.extend_from_array(&token_id.to_be_bytes());
+    raw.extend_from_array(&buyer_quota.to_be_bytes());
+    raw.extend_from_array(&price_per_unit.to_be_bytes());
+    raw.extend_from_array(&valid_until.to_be_bytes());
+    let uri_hash_bytes: Bytes = uri_hash.clone().into();
+    raw.append(&uri_hash_bytes);
+    raw.append(&currency.to_xdr(env));
+    env.crypto().sha256(&raw)
+}
+
+// ── Normal-721: deploy via factory + mint one token ──────────────────────────
+
+#[test]
+fn integration_normal_721_deploy_and_mint() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    let royalty_receiver = Address::generate(&env);
+    let currency         = Address::generate(&env);
+    let salt             = BytesN::from_array(&env, &[0xC1u8; 32]);
+
+    let coll_addr = client.deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "Integ721"),
+        &String::from_str(&env, "I721"),
+        &1_000u64,
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+
+    // Registry
+    let all = client.all_collections();
+    assert_eq!(all.len(), 1);
+    assert!(matches!(all.get(0).unwrap().kind, CollectionKind::Normal721));
+    assert_eq!(all.get(0).unwrap().address, coll_addr);
+
+    // Mint
+    let n721  = Normal721CollClient::new(&env, &coll_addr);
+    let buyer = Address::generate(&env);
+    let tid   = n721.mint(&buyer, &String::from_str(&env, "ipfs://n721/0"));
+    assert_eq!(tid, 0u64);
+    assert_eq!(n721.balance_of(&buyer), 1u64);
+}
+
+// ── Normal-1155: deploy via factory + mint one token type ────────────────────
+
+#[test]
+fn integration_normal_1155_deploy_and_mint() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    let royalty_receiver = Address::generate(&env);
+    let currency         = Address::generate(&env);
+    let salt             = BytesN::from_array(&env, &[0xC2u8; 32]);
+
+    let coll_addr = client.deploy_normal_1155(
+        &creator,
+        &currency,
+        &String::from_str(&env, "Integ1155"),
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+
+    // Registry
+    let all = client.all_collections();
+    assert_eq!(all.len(), 1);
+    assert!(matches!(all.get(0).unwrap().kind, CollectionKind::Normal1155));
+    assert_eq!(all.get(0).unwrap().address, coll_addr);
+
+    // Mint
+    let n1155 = Normal1155CollClient::new(&env, &coll_addr);
+    let buyer = Address::generate(&env);
+    let tid   = n1155.mint_new(&buyer, &10u128, &String::from_str(&env, "ipfs://n1155/0"));
+    assert_eq!(tid, 0u64);
+    assert_eq!(n1155.balance_of(&buyer, &0u64), 10u128);
+}
+
+// ── LazyMint-721: deploy via factory + redeem with real ed25519 signature ────
+
+#[test]
+fn integration_lazy_721_deploy_and_mint() {
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    let secret_bytes  = [7u8; 32];
+    let signing_key   = SigningKey::from_bytes(&secret_bytes);
+    let creator_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+    let royalty_receiver = Address::generate(&env);
+    let fee_currency     = Address::generate(&env);
+    let salt             = BytesN::from_array(&env, &[0xC3u8; 32]);
+
+    let coll_addr = client.deploy_lazy_721(
+        &creator,
+        &fee_currency,
+        &creator_pubkey,
+        &String::from_str(&env, "IntegL721"),
+        &String::from_str(&env, "IL7"),
+        &1_000u64,
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+
+    // Registry
+    let all = client.all_collections();
+    assert_eq!(all.len(), 1);
+    assert!(matches!(all.get(0).unwrap().kind, CollectionKind::LazyMint721));
+    assert_eq!(all.get(0).unwrap().address, coll_addr);
+
+    // Build + sign voucher
+    let voucher_currency = Address::generate(&env);
+    let uri_hash         = BytesN::from_array(&env, &[0u8; 32]);
+    let token_id: u64    = 0;
+    let price: i128      = 0;
+    let valid_until: u64 = 0;
+
+    let digest = lazy721_digest(
+        &env, &coll_addr, token_id, price, valid_until, &uri_hash, &voucher_currency,
+    );
+    let sig      = signing_key.sign(&digest.to_array());
+    let sig_bn   = BytesN::<64>::from_array(&env, &sig.to_bytes());
+
+    let voucher = MintVoucher {
+        token_id,
+        price,
+        currency: voucher_currency,
+        uri: String::from_str(&env, "ipfs://l721/0"),
+        uri_hash,
+        valid_until,
+    };
+
+    // Redeem
+    let l721  = Lazy721CollClient::new(&env, &coll_addr);
+    let buyer = Address::generate(&env);
+    let tid   = l721.redeem(&buyer, &voucher, &sig_bn);
+    assert_eq!(tid, 0u64);
+    assert_eq!(l721.balance_of(&buyer), 1u64);
+}
+
+// ── LazyMint-1155: deploy via factory + register edition + redeem ─────────────
+
+#[test]
+fn integration_lazy_1155_deploy_and_mint() {
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    let secret_bytes  = [8u8; 32];
+    let signing_key   = SigningKey::from_bytes(&secret_bytes);
+    let creator_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+    let royalty_receiver = Address::generate(&env);
+    let fee_currency     = Address::generate(&env);
+    let salt             = BytesN::from_array(&env, &[0xC4u8; 32]);
+
+    let coll_addr = client.deploy_lazy_1155(
+        &creator,
+        &fee_currency,
+        &creator_pubkey,
+        &String::from_str(&env, "IntegL1155"),
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+
+    // Registry
+    let all = client.all_collections();
+    assert_eq!(all.len(), 1);
+    assert!(matches!(all.get(0).unwrap().kind, CollectionKind::LazyMint1155));
+    assert_eq!(all.get(0).unwrap().address, coll_addr);
+
+    let l1155      = Lazy1155CollClient::new(&env, &coll_addr);
+    let token_id: u64   = 0;
+    let edition_max: u128 = 100;
+
+    // Register edition before minting
+    l1155.register_edition(&token_id, &edition_max);
+
+    // Build + sign voucher
+    let voucher_currency  = Address::generate(&env);
+    let uri_hash          = BytesN::from_array(&env, &[0u8; 32]);
+    let buyer_quota: u128 = 10;
+    let price_per_unit: i128 = 0;
+    let valid_until: u64  = 0;
+    let amount: u128      = 3;
+
+    let digest = lazy1155_digest(
+        &env, &coll_addr, token_id, buyer_quota, price_per_unit, valid_until,
+        &uri_hash, &voucher_currency,
+    );
+    let sig    = signing_key.sign(&digest.to_array());
+    let sig_bn = BytesN::<64>::from_array(&env, &sig.to_bytes());
+
+    let voucher = MintVoucher1155 {
+        token_id,
+        buyer_quota,
+        price_per_unit,
+        currency: voucher_currency,
+        uri: String::from_str(&env, "ipfs://l1155/0"),
+        uri_hash,
+        valid_until,
+    };
+
+    // Redeem
+    let buyer = Address::generate(&env);
+    l1155.redeem(&buyer, &voucher, &amount, &sig_bn);
+    assert_eq!(l1155.balance_of(&buyer, &token_id), amount);
+}
