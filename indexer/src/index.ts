@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import routes from './api/routes.js';
 import { startPolling } from './poller.js';
+import { isStalled } from './stall.js';
 import { rateLimiter } from './api/rate-limit-middleware.js';
 import { metricsMiddleware, handleMetrics } from './metrics.js';
 import prisma from './db.js';
@@ -53,10 +54,12 @@ app.get('/health', (req: express.Request, res: express.Response) => {
     res.json({ status: 'ok' });
 });
 
-// Readiness probe — returns 503 until the indexer has processed at least one ledger.
-// Use this for Kubernetes readinessProbe / Docker HEALTHCHECK so traffic is only
-// routed once the indexer is actually synced and serving real data.
+// Readiness probe — returns 503 until the indexer has processed at least one ledger,
+// or if the indexer has stalled (no progress for STALL_THRESHOLD_MS).
 app.get('/readyz', async (req: express.Request, res: express.Response) => {
+    if (isStalled()) {
+        return res.status(503).json({ status: 'stalled', reason: 'Indexer not advancing' });
+    }
     const state = await prisma.syncState.findUnique({ where: { id: 1 } });
     if (state && state.lastLedger > 0) {
         res.json({ status: 'ready', lastLedger: state.lastLedger });

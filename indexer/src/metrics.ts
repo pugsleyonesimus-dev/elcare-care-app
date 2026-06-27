@@ -20,6 +20,11 @@ export const syncLatencyGauge = new client.Gauge({
   help: 'The difference between the latest network ledger and the processed ledger',
 });
 
+export const stalledGauge = new client.Gauge({
+  name: 'indexer_stalled',
+  help: '1 when the indexer has made no ledger progress for longer than STALL_THRESHOLD_MS, 0 otherwise',
+});
+
 export const httpRequestDurationMicroseconds = new client.Histogram({
   name: 'http_request_duration_seconds',
   help: 'Duration of HTTP requests in seconds',

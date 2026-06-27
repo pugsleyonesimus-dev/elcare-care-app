@@ -7,6 +7,7 @@ import {
   networkLatestLedgerGauge,
   syncLatencyGauge
 } from './metrics.js';
+import { recordProgress } from './stall.js';
 import { collectMarketplaceEvents, MAX_LEDGER_WINDOW } from './event-sync.js';
 import redis from './redis.js';
 
@@ -248,6 +249,7 @@ export async function startPolling() {
         });
 
         updateSyncMetrics(updatedState.lastLedger, networkLatestLedger);
+        recordProgress();
 
         for (const ev of newEvents) emitSSEEvent(ev);
       } else if (networkLatestLedger > syncState.lastLedger) {
@@ -269,6 +271,7 @@ export async function startPolling() {
         });
 
         updateSyncMetrics(updatedState.lastLedger, networkLatestLedger);
+        recordProgress();
       } else {
         updateSyncMetrics(syncState.lastLedger, networkLatestLedger);
       }
