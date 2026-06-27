@@ -799,3 +799,251 @@ fn base_uri_update_changes_token_uri_for_all_tokens() {
         String::from_str(&env, "https://new/1")
     );
 }
+
+// ── Collection royalty support ────────────────────────────────────────────────
+
+#[test]
+fn royalty_info_for_uses_default_when_no_per_token_override() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let id = client.mint(&alice, &String::from_str(&env, "uri"));
+
+    // setup() initialises with royalty_receiver and 500 bps (5%)
+    let (recv, bps) = client.royalty_info();
+    let (recv2, amount) = client.royalty_info_for(&id, &10_000i128);
+
+    assert_eq!(recv, recv2);
+    // 10_000 * 500 / 10_000 = 500
+    assert_eq!(amount, 500i128);
+    let _ = bps;
+}
+
+#[test]
+fn royalty_info_for_per_token_override_wins_over_default() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let token_receiver = Address::generate(&env);
+    let id = client.mint(&alice, &String::from_str(&env, "uri"));
+
+    client.set_token_royalty(&id, &token_receiver, &1_000u32); // 10%
+
+    let (recv, amount) = client.royalty_info_for(&id, &5_000i128);
+    // 5_000 * 1_000 / 10_000 = 500
+    assert_eq!(recv, token_receiver);
+    assert_eq!(amount, 500i128);
+}
+
+#[test]
+fn royalty_info_for_another_token_still_uses_default() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let token_receiver = Address::generate(&env);
+
+    let id0 = client.mint(&alice, &String::from_str(&env, "uri0"));
+    let id1 = client.mint(&alice, &String::from_str(&env, "uri1"));
+
+    client.set_token_royalty(&id0, &token_receiver, &200u32);
+
+    // id1 has no override — should use collection default
+    let (recv1, _) = client.royalty_info_for(&id1, &1_000i128);
+    let (default_recv, _) = client.royalty_info();
+    assert_eq!(recv1, default_recv);
+}
+
+#[test]
+fn set_default_royalty_updates_collection_royalty() {
+    let (env, client, _, _) = setup();
+    let new_recv = Address::generate(&env);
+
+    client.set_default_royalty(&new_recv, &300u32);
+
+    let (recv, bps) = client.royalty_info();
+    assert_eq!(recv, new_recv);
+    assert_eq!(bps, 300u32);
+}
+
+#[test]
+fn set_default_royalty_reflected_in_royalty_info_for() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let new_recv = Address::generate(&env);
+    let id = client.mint(&alice, &String::from_str(&env, "uri"));
+
+    client.set_default_royalty(&new_recv, &250u32); // 2.5%
+
+    let (recv, amount) = client.royalty_info_for(&id, &8_000i128);
+    // 8_000 * 250 / 10_000 = 200
+    assert_eq!(recv, new_recv);
+    assert_eq!(amount, 200i128);
+}
+
+#[test]
+fn set_default_royalty_zero_bps_returns_zero_amount() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let recv = Address::generate(&env);
+    let id = client.mint(&alice, &String::from_str(&env, "uri"));
+
+    client.set_default_royalty(&recv, &0u32);
+
+    let (_, amount) = client.royalty_info_for(&id, &100_000i128);
+    assert_eq!(amount, 0i128);
+}
+
+#[test]
+fn set_default_royalty_max_bps_succeeds() {
+    let (env, client, _, _) = setup();
+    let recv = Address::generate(&env);
+    // 10_000 bps = 100% — boundary, must succeed
+    assert!(client.try_set_default_royalty(&recv, &10_000u32).is_ok());
+    let (_, bps) = client.royalty_info();
+    assert_eq!(bps, 10_000u32);
+}
+
+#[test]
+fn set_default_royalty_exceeds_max_bps_returns_invalid_bps() {
+    let (env, client, _, _) = setup();
+    let recv = Address::generate(&env);
+    let result = client.try_set_default_royalty(&recv, &10_001u32);
+    assert_eq!(result, Err(Ok(Error::InvalidBps)));
+}
+
+#[test]
+fn set_default_royalty_non_creator_fails() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let contract_id = env.register(NormalNFT721, ());
+    let client = NormalNFT721Client::new(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let royalty_receiver = Address::generate(&env);
+    client.initialize(
+        &creator,
+        &String::from_str(&env, "T"),
+        &String::from_str(&env, "T"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+    );
+    let result = client.try_set_default_royalty(&royalty_receiver, &500u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn set_token_royalty_zero_bps_returns_zero_amount() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let token_recv = Address::generate(&env);
+    let id = client.mint(&alice, &String::from_str(&env, "uri"));
+
+    client.set_token_royalty(&id, &token_recv, &0u32);
+
+    let (recv, amount) = client.royalty_info_for(&id, &999_999i128);
+    assert_eq!(recv, token_recv);
+    assert_eq!(amount, 0i128);
+}
+
+#[test]
+fn set_token_royalty_max_bps_succeeds() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let token_recv = Address::generate(&env);
+    let id = client.mint(&alice, &String::from_str(&env, "uri"));
+
+    assert!(client.try_set_token_royalty(&id, &token_recv, &10_000u32).is_ok());
+
+    let (recv, amount) = client.royalty_info_for(&id, &1_000i128);
+    assert_eq!(recv, token_recv);
+    // 1_000 * 10_000 / 10_000 = 1_000
+    assert_eq!(amount, 1_000i128);
+}
+
+#[test]
+fn set_token_royalty_exceeds_max_bps_returns_invalid_bps() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let token_recv = Address::generate(&env);
+    let id = client.mint(&alice, &String::from_str(&env, "uri"));
+
+    let result = client.try_set_token_royalty(&id, &token_recv, &10_001u32);
+    assert_eq!(result, Err(Ok(Error::InvalidBps)));
+}
+
+#[test]
+fn set_token_royalty_non_creator_fails() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let contract_id = env.register(NormalNFT721, ());
+    let client = NormalNFT721Client::new(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let royalty_receiver = Address::generate(&env);
+    client.initialize(
+        &creator,
+        &String::from_str(&env, "T"),
+        &String::from_str(&env, "T"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+    );
+    let result = client.try_set_token_royalty(&0u64, &royalty_receiver, &500u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn royalty_info_for_zero_sale_price_returns_zero_amount() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let id = client.mint(&alice, &String::from_str(&env, "uri"));
+
+    let (_, amount) = client.royalty_info_for(&id, &0i128);
+    assert_eq!(amount, 0i128);
+}
+
+#[test]
+fn royalty_info_for_rounds_down_fractional_amount() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let recv = Address::generate(&env);
+    let id = client.mint(&alice, &String::from_str(&env, "uri"));
+
+    client.set_default_royalty(&recv, &333u32); // 3.33%
+    // 1_000 * 333 / 10_000 = 33.3 → rounds down to 33
+    let (_, amount) = client.royalty_info_for(&id, &1_000i128);
+    assert_eq!(amount, 33i128);
+}
+
+#[test]
+fn per_token_royalty_can_be_updated() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let recv1 = Address::generate(&env);
+    let recv2 = Address::generate(&env);
+    let id = client.mint(&alice, &String::from_str(&env, "uri"));
+
+    client.set_token_royalty(&id, &recv1, &100u32);
+    let (r1, _) = client.royalty_info_for(&id, &1_000i128);
+    assert_eq!(r1, recv1);
+
+    client.set_token_royalty(&id, &recv2, &200u32);
+    let (r2, amount) = client.royalty_info_for(&id, &1_000i128);
+    assert_eq!(r2, recv2);
+    // 1_000 * 200 / 10_000 = 20
+    assert_eq!(amount, 20i128);
+}
+
+#[test]
+fn default_royalty_does_not_affect_per_token_override() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let token_recv = Address::generate(&env);
+    let new_default_recv = Address::generate(&env);
+    let id = client.mint(&alice, &String::from_str(&env, "uri"));
+
+    client.set_token_royalty(&id, &token_recv, &800u32);
+    // Change the default — should not affect the per-token override
+    client.set_default_royalty(&new_default_recv, &100u32);
+
+    let (recv, amount) = client.royalty_info_for(&id, &10_000i128);
+    // Per-token override must still win: 10_000 * 800 / 10_000 = 800
+    assert_eq!(recv, token_recv);
+    assert_eq!(amount, 800i128);
+}

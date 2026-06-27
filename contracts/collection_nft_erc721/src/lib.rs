@@ -14,6 +14,7 @@ use soroban_sdk::{
 
 const TTL_THRESHOLD: u32 = 50_000;
 const TTL_BUMP: u32 = 100_000;
+const MAX_BPS: u32 = 10_000; // 100% in basis points
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
@@ -29,8 +30,9 @@ pub enum Error {
     MaxSupplyReached = 6,
     NotCreator = 7,
     InsufficientBalance = 8,
-    MetadataFrozen = 9, // base_uri cannot be updated after freeze
-    AlreadyFrozen = 10, // freeze_metadata called more than once
+    MetadataFrozen = 9,  // base_uri cannot be updated after freeze
+    AlreadyFrozen = 10,  // freeze_metadata called more than once
+    InvalidBps = 11,     // basis points exceed MAX_BPS (10_000)
 }
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
@@ -56,6 +58,9 @@ pub enum DataKey {
     ApprovedForAll(Address, Address),
     BaseUri,        // String — collection-level base URI (optional)
     MetadataFrozen, // bool   — permanently frozen when true
+    // Per-token royalty overrides (persistent, optional)
+    TokenRoyaltyReceiver(u64), // Address
+    TokenRoyaltyBps(u64),      // u32
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -447,8 +452,8 @@ impl NormalNFT721 {
         env.storage().instance().get(&DataKey::Creator).unwrap()
     }
 
-    /// Returns (royalty_receiver, royalty_bps).
-    /// Marketplaces should call this before listing.
+    /// Returns (royalty_receiver, royalty_bps) for the collection default.
+    /// Preserved for backward compatibility with existing marketplace integrations.
     pub fn royalty_info(env: Env) -> (Address, u32) {
         (
             env.storage()
@@ -460,6 +465,55 @@ impl NormalNFT721 {
                 .get(&DataKey::RoyaltyBps)
                 .unwrap_or(0),
         )
+    }
+
+    /// EIP-2981-style royalty query: returns (recipient, royalty_amount) for a
+    /// given token and sale price.  Per-token overrides take priority over the
+    /// collection default.  Royalty amount = sale_price * bps / 10_000 using
+    /// checked arithmetic (returns 0 amount when sale_price is 0).
+    pub fn royalty_info_for(
+        env: Env,
+        token_id: u64,
+        sale_price: i128,
+    ) -> Result<(Address, i128), Error> {
+        // Resolve recipient and bps — per-token override wins if present.
+        let (receiver, bps) = if env
+            .storage()
+            .persistent()
+            .has(&DataKey::TokenRoyaltyBps(token_id))
+        {
+            let r: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TokenRoyaltyReceiver(token_id))
+                .ok_or(Error::NotInitialized)?;
+            let b: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TokenRoyaltyBps(token_id))
+                .unwrap_or(0);
+            (r, b)
+        } else {
+            (
+                env.storage()
+                    .instance()
+                    .get(&DataKey::RoyaltyReceiver)
+                    .ok_or(Error::NotInitialized)?,
+                env.storage()
+                    .instance()
+                    .get(&DataKey::RoyaltyBps)
+                    .unwrap_or(0),
+            )
+        };
+
+        // Checked arithmetic: sale_price * bps / MAX_BPS
+        let amount = sale_price
+            .checked_mul(bps as i128)
+            .unwrap_or(0)
+            .checked_div(MAX_BPS as i128)
+            .unwrap_or(0);
+
+        Ok((receiver, amount))
     }
 
     pub fn get_approved(env: Env, token_id: u64) -> Option<Address> {
@@ -491,6 +545,54 @@ impl NormalNFT721 {
             .instance()
             .set(&DataKey::RoyaltyReceiver, &receiver);
         env.storage().instance().set(&DataKey::RoyaltyBps, &bps);
+        Ok(())
+    }
+
+    /// Set the collection-level default royalty with bps validation.
+    /// Replaces any previously stored default.  Callable only by creator.
+    pub fn set_default_royalty(env: Env, receiver: Address, bps: u32) -> Result<(), Error> {
+        Self::extend_instance_ttl(&env);
+        Self::only_creator(&env)?;
+        if bps > MAX_BPS {
+            return Err(Error::InvalidBps);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::RoyaltyReceiver, &receiver);
+        env.storage().instance().set(&DataKey::RoyaltyBps, &bps);
+        Ok(())
+    }
+
+    /// Set a per-token royalty override with bps validation.
+    /// When set, `royalty_info_for(token_id, ..)` uses this instead of the default.
+    /// Callable only by creator.
+    pub fn set_token_royalty(
+        env: Env,
+        token_id: u64,
+        receiver: Address,
+        bps: u32,
+    ) -> Result<(), Error> {
+        Self::extend_instance_ttl(&env);
+        Self::only_creator(&env)?;
+        if bps > MAX_BPS {
+            return Err(Error::InvalidBps);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::TokenRoyaltyReceiver(token_id), &receiver);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TokenRoyaltyBps(token_id), &bps);
+        env.storage().persistent().extend_ttl(
+            &DataKey::TokenRoyaltyReceiver(token_id),
+            TTL_THRESHOLD,
+            TTL_BUMP,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::TokenRoyaltyBps(token_id),
+            TTL_THRESHOLD,
+            TTL_BUMP,
+        );
         Ok(())
     }
 
