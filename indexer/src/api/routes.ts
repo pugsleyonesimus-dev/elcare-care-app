@@ -31,6 +31,15 @@ function nextSseId(): number {
   return ++sseEventCounter;
 }
 
+// Exposed for testing only
+export function _getSseBuffer() { return sseBuffer; }
+export function _getSseEventCounter() { return sseEventCounter; }
+export function _resetSseState() {
+  sseEventCounter = 0;
+  sseBuffer.length = 0;
+  sseClients.clear();
+}
+
 export function emitSSEEvent(event: any) {
   const id = nextSseId();
   const dataStr = JSON.stringify(event, (_k, v) => typeof v === 'bigint' ? v.toString() : v);
