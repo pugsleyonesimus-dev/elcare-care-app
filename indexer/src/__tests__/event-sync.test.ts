@@ -147,4 +147,50 @@ describe('collectMarketplaceEvents', () => {
     expect(events).toHaveLength(1);
     expect(events[0].eventType).toBe('OK');
   });
+
+  it('none dropped: collects events from multi-page responses across multiple ledger windows', async () => {
+    // Two windows; each window has two pages of events.
+    // Old single-fetch code would have silently dropped page 2 in each window.
+    let call = 0;
+    const getEvents = vi.fn().mockImplementation(({ startLedger }: any) => {
+      call++;
+      if (startLedger === 1) {
+        // Window 1, page 1
+        if (call === 1) return Promise.resolve({ events: [{ topic: ['E'], value: 'v', ledger: 1 }], paginationToken: 'w1-tok2' });
+        // Window 1, page 2
+        if (call === 2) return Promise.resolve({ events: [{ topic: ['E'], value: 'v', ledger: 2 }], paginationToken: null });
+      }
+      // Window 2, page 1
+      if (call === 3) return Promise.resolve({ events: [{ topic: ['E'], value: 'v', ledger: MAX_LEDGER_WINDOW + 1 }], paginationToken: 'w2-tok2' });
+      // Window 2, page 2
+      return Promise.resolve({ events: [{ topic: ['E'], value: 'v', ledger: MAX_LEDGER_WINDOW + 2 }], paginationToken: null });
+    });
+
+    const events = await collectMarketplaceEvents({ getEvents } as any, ['C1'], 1, MAX_LEDGER_WINDOW + 5);
+
+    // 2 pages × 2 windows = 4 events — none dropped
+    expect(events).toHaveLength(4);
+    expect(getEvents).toHaveBeenCalledTimes(4);
+  });
+
+  it('carry-forward: next cycle picks up from the ledger after the last event processed', async () => {
+    // This test verifies the contract between collectMarketplaceEvents and the
+    // poller: the function returns events up to endLedger; the poller then
+    // advances syncState to the max ledger seen, so the next call starts at
+    // maxLedger + 1 — the remaining range is carried forward automatically.
+    const getEvents = vi.fn().mockResolvedValue({
+      events: [
+        { topic: ['E'], value: 'v', ledger: 50 },
+        { topic: ['E'], value: 'v', ledger: 75 },
+      ],
+      paginationToken: null,
+    });
+
+    const events = await collectMarketplaceEvents({ getEvents } as any, ['C1'], 1, 100);
+
+    expect(events).toHaveLength(2);
+    const maxLedger = Math.max(...events.map((e) => e.ledgerSequence));
+    expect(maxLedger).toBe(75);
+    // The poller uses this value to advance syncState; next cycle: startLedger = 76
+  });
 });
