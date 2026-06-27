@@ -649,6 +649,144 @@ fn front_runner_cannot_grief_lazy_1155() {
     assert_eq!(client.collection_count(), 2u64);
 }
 
+// ── Category C: Duplicate (creator, salt) deploy reverts cleanly ─────────────
+//
+// Deploying with the same creator AND same raw salt a second time must revert
+// because the derived secure_salt (sha256(creator ‖ raw_salt)) is identical,
+// so the factory would try to instantiate a contract at an already-occupied
+// deterministic address — the Soroban VM rejects this with a host error.
+
+/// deploy_normal_721: same creator, same salt → second deploy reverts.
+#[test]
+#[should_panic]
+fn duplicate_creator_salt_normal_721_reverts() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+    let salt = BytesN::from_array(&env, &[0xE1u8; 32]);
+    let royalty_receiver = Address::generate(&env);
+    let currency = Address::generate(&env);
+
+    client.deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "First 721"),
+        &String::from_str(&env, "F721"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+    // Second call with identical creator + salt must panic.
+    client.deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "Dupe 721"),
+        &String::from_str(&env, "D721"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+}
+
+/// deploy_normal_1155: same creator, same salt → second deploy reverts.
+#[test]
+#[should_panic]
+fn duplicate_creator_salt_normal_1155_reverts() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+    let salt = BytesN::from_array(&env, &[0xE2u8; 32]);
+    let royalty_receiver = Address::generate(&env);
+    let currency = Address::generate(&env);
+
+    client.deploy_normal_1155(
+        &creator,
+        &currency,
+        &String::from_str(&env, "First 1155"),
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+    client.deploy_normal_1155(
+        &creator,
+        &currency,
+        &String::from_str(&env, "Dupe 1155"),
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+}
+
+/// deploy_lazy_721: same creator, same salt → second deploy reverts.
+#[test]
+#[should_panic]
+fn duplicate_creator_salt_lazy_721_reverts() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+    let salt = BytesN::from_array(&env, &[0xE3u8; 32]);
+    let creator_pubkey = BytesN::from_array(&env, &[0x01u8; 32]);
+    let royalty_receiver = Address::generate(&env);
+    let currency = Address::generate(&env);
+
+    client.deploy_lazy_721(
+        &creator,
+        &currency,
+        &creator_pubkey,
+        &String::from_str(&env, "First L721"),
+        &String::from_str(&env, "FL72"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+    client.deploy_lazy_721(
+        &creator,
+        &currency,
+        &creator_pubkey,
+        &String::from_str(&env, "Dupe L721"),
+        &String::from_str(&env, "DL72"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+}
+
+/// deploy_lazy_1155: same creator, same salt → second deploy reverts.
+#[test]
+#[should_panic]
+fn duplicate_creator_salt_lazy_1155_reverts() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+    let salt = BytesN::from_array(&env, &[0xE4u8; 32]);
+    let creator_pubkey = BytesN::from_array(&env, &[0x02u8; 32]);
+    let royalty_receiver = Address::generate(&env);
+    let currency = Address::generate(&env);
+
+    client.deploy_lazy_1155(
+        &creator,
+        &currency,
+        &creator_pubkey,
+        &String::from_str(&env, "First L1155"),
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+    client.deploy_lazy_1155(
+        &creator,
+        &currency,
+        &creator_pubkey,
+        &String::from_str(&env, "Dupe L1155"),
+        &0u32,
+        &royalty_receiver,
+        &salt,
+    );
+}
+
 // ── Initialisation error tests ──────────────────────────────────
 
 #[test]
