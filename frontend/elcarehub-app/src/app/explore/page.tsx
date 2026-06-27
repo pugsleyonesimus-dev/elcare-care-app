@@ -21,6 +21,7 @@ import { SearchFilter, Filters, SortOption } from "@/components/SearchFilter";
 import { fetchMetadata, ArtworkMetadata } from "@/lib/ipfs";
 import { fetchListings } from "@/lib/indexer";
 import { getAllListings } from "@/lib/contract";
+import { useFilterUrlSync } from "@/hooks/useFilterUrlSync";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -50,22 +51,17 @@ export default function ExplorePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [filters, setFilters] = useState<Filters>({
-    search: "",
-    status: "All",
-    category: "All",
-    minPrice: "",
-    maxPrice: "",
-    sort: "newest",
-  });
+  // ── URL-synced filters (ISSUE-100) ─────────────────────
+  const { initialFilters, initialPage, syncToUrl } = useFilterUrlSync();
 
-  const [page, setPage] = useState(1);
+  const [filters, setFilters] = useState<Filters>(initialFilters);
+  const [page, setPage] = useState(initialPage);
   const [showFilters, setShowFilters] = useState(false);
 
   const [metadataMap, setMetadataMap] = useState<Map<string, ArtworkMetadata | null>>(new Map());
 
   // Debounce search so we don't fire on every keystroke
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState(initialFilters.search);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
@@ -73,7 +69,9 @@ export default function ExplorePage() {
     return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
   }, [filters.search]);
 
-  // Fetch from indexer whenever database-filterable params change
+  // ── Debounced indexer fetch (ISSUE-100) ────────────────
+  // We debounce the entire load so rapid changes to any filter
+  // (status, price, search) only trigger a single indexer call.
   const load = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -105,10 +103,21 @@ export default function ExplorePage() {
     }
   }, [filters.status, filters.minPrice, filters.maxPrice, debouncedSearch]);
 
-  useEffect(() => { load(); }, [load]);
+  // Debounced load effect — 350ms debounce window so rapid
+  // filter changes produce a single indexer request.
+  const debouncedLoadRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (debouncedLoadRef.current) clearTimeout(debouncedLoadRef.current);
+    debouncedLoadRef.current = setTimeout(load, 350);
+    return () => {
+      if (debouncedLoadRef.current) clearTimeout(debouncedLoadRef.current);
+    };
+  }, [load]);
 
-  // Reset page when filters change
-  useEffect(() => { setPage(1); }, [filters]);
+  // ── Sync filters & page to URL (ISSUE-100) ───────────
+  useEffect(() => {
+    syncToUrl(filters, page);
+  }, [filters, page, syncToUrl]);
 
   // Resolve metadata for category / full-text search (client-side only)
   useEffect(() => {
@@ -221,7 +230,12 @@ export default function ExplorePage() {
       {/* Controls */}
       <SearchFilter
         filters={filters}
-        onFilterChange={(newFilters) => setFilters((prev) => ({ ...prev, ...newFilters }))}
+        onFilterChange={(newFilters) => {
+          setFilters((prev) => ({ ...prev, ...newFilters }));
+          // Reset to page 1 whenever any filter changes so the
+          // user doesn't land on an empty page.
+          setPage(1);
+        }}
         showFilters={showFilters}
         setShowFilters={setShowFilters}
         totalResults={filtered.length}
