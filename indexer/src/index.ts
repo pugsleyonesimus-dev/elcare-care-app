@@ -6,6 +6,7 @@ import routes from './api/routes.js';
 import { startPolling } from './poller.js';
 import { rateLimiter } from './api/rate-limit-middleware.js';
 import { metricsMiddleware, handleMetrics } from './metrics.js';
+import { errorHandler } from './api/errors.js';
 import prisma from './db.js';
 
 dotenv.config();
@@ -47,6 +48,9 @@ app.use(rateLimiter);
 
 // API Routes
 app.use('/', routes);
+
+// Central error handler — must be registered after all routes
+app.use(errorHandler);
 
 // Health check
 app.get('/health', (req: express.Request, res: express.Response) => {

@@ -33,11 +33,13 @@ vi.mock('../db', () => ({ default: mockPrisma }));
 vi.mock('../redis.js', () => ({ default: mockRedis }));
 
 import router from '../api/routes';
+import { errorHandler } from '../api/errors';
 
 // Build a minimal Express app with the router mounted at root
 const app = express();
 app.use(express.json());
 app.use(router);
+app.use(errorHandler);
 
 // ── Sample fixtures ───────────────────────────────────────────────────────────
 
@@ -397,7 +399,7 @@ describe('GET /stats', () => {
   it('returns 400 for invalid range', async () => {
     const res = await request(app).get('/stats?range=invalid');
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Invalid range value. Use day, week, or month.');
+    expect(res.body.error.message).toBe('Invalid range value. Use day, week, or month.');
   });
 
   it('returns stats with from/to query params', async () => {
@@ -416,7 +418,7 @@ describe('GET /stats', () => {
   it('returns 400 for invalid date format', async () => {
     const res = await request(app).get('/stats?from=bad-date');
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Invalid from date format. Use ISO 8601.');
+    expect(res.body.error.message).toBe('Invalid from date format. Use ISO 8601.');
   });
 });
 // ── GET /wallets/:address/activity — extended coverage ───────────────────────
