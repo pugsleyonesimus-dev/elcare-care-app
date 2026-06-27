@@ -20,6 +20,7 @@ import {
 } from "@/lib/contract";
 import { getReadableErrorMessage } from "@/lib/errors";
 import { useTransientErrorToast } from "./useTransientErrorToast";
+import { useToast } from "@/components/ToastProvider";
 
 // ── useOffererOffers ─────────────────────────────────────────
 
@@ -171,6 +172,7 @@ export function useWithdrawOffer(publicKey: string | null) {
   const [isWithdrawing, setIsWithdrawing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useTransientErrorToast(error);
+  const { pushToast } = useToast();
 
   const withdraw = useCallback(
     async (offerId: number): Promise<boolean> => {
@@ -180,8 +182,10 @@ export function useWithdrawOffer(publicKey: string | null) {
       }
       setIsWithdrawing(true);
       setError(null);
+      pushToast("Withdrawing offer…", "info");
       try {
         await withdrawOffer(publicKey, offerId);
+        pushToast("Offer withdrawn successfully", "success");
         return true;
       } catch (err: unknown) {
         setError(getReadableErrorMessage(err, "Failed to withdraw offer"));
@@ -190,7 +194,7 @@ export function useWithdrawOffer(publicKey: string | null) {
         setIsWithdrawing(false);
       }
     },
-    [publicKey]
+    [publicKey, pushToast]
   );
 
   return { withdraw, isWithdrawing, error };
@@ -202,6 +206,7 @@ export function useAcceptOffer(publicKey: string | null) {
   const [isAccepting, setIsAccepting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useTransientErrorToast(error);
+  const { pushToast } = useToast();
 
   const accept = useCallback(
     async (offerId: number): Promise<boolean> => {
@@ -211,8 +216,10 @@ export function useAcceptOffer(publicKey: string | null) {
       }
       setIsAccepting(true);
       setError(null);
+      pushToast("Accepting offer…", "info");
       try {
         await acceptOffer(publicKey, offerId);
+        pushToast("Offer accepted!", "success");
         return true;
       } catch (err: unknown) {
         setError(getReadableErrorMessage(err, "Failed to accept offer"));
@@ -221,7 +228,7 @@ export function useAcceptOffer(publicKey: string | null) {
         setIsAccepting(false);
       }
     },
-    [publicKey]
+    [publicKey, pushToast]
   );
 
   return { accept, isAccepting, error };
@@ -233,6 +240,7 @@ export function useRejectOffer(publicKey: string | null) {
   const [isRejecting, setIsRejecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useTransientErrorToast(error);
+  const { pushToast } = useToast();
 
   const reject = useCallback(
     async (offerId: number): Promise<boolean> => {
@@ -242,8 +250,10 @@ export function useRejectOffer(publicKey: string | null) {
       }
       setIsRejecting(true);
       setError(null);
+      pushToast("Rejecting offer…", "info");
       try {
         await rejectOffer(publicKey, offerId);
+        pushToast("Offer rejected", "success");
         return true;
       } catch (err: unknown) {
         setError(getReadableErrorMessage(err, "Failed to reject offer"));
@@ -252,7 +262,7 @@ export function useRejectOffer(publicKey: string | null) {
         setIsRejecting(false);
       }
     },
-    [publicKey]
+    [publicKey, pushToast]
   );
 
   return { reject, isRejecting, error };
