@@ -54,6 +54,12 @@ pub enum MarketplaceError {
     /// bidding) is not allowed.  The bidder address must differ from the
     /// auction's `creator` field.
     SelfBidNotAllowed = 32,
+    /// An offer state transition was attempted from a terminal state (Accepted,
+    /// Rejected, or Withdrawn), or from Pending with the wrong authorizer.
+    InvalidOfferState = 33,
+    /// `accept_offer` called after the offer's `expires_at` has passed; or
+    /// `reclaim_offer` called before expiry / on a non-expiring offer.
+    OfferExpired = 34,
 }
 
 #[contracttype]
@@ -188,4 +194,8 @@ pub struct Offer {
     pub token: Address,
     pub status: OfferStatus,
     pub created_at: u32,
+    /// Optional expiry (Unix timestamp, seconds). When `Some(t)` and the
+    /// ledger timestamp >= t: `accept_offer` reverts, anyone may call
+    /// `reclaim_offer` to refund the offerer.  `None` = no expiry.
+    pub expires_at: Option<u64>,
 }

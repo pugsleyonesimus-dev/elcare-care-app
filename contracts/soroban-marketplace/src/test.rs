@@ -375,7 +375,7 @@ fn test_cancel_listing_rejects_pending_offers() {
     client.add_token_to_whitelist(&token_id);
 
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
 
     let result = client.cancel_listing(&artist, &listing_id);
     assert!(result);
@@ -573,7 +573,7 @@ fn test_update_listing_fails_with_pending_offers() {
     client.add_token_to_whitelist(&token_id);
 
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
 
     // Try to update while offer is pending
     let new_cid = bytes!(&env, 0x51);
@@ -1240,7 +1240,7 @@ fn test_make_offer_success() {
 
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
 
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
 
     assert_eq!(offer_id, 1);
 
@@ -1272,7 +1272,7 @@ fn test_make_offer_on_own_listing_fails() {
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
 
     // Artist tries to offer on their own listing
-    client.make_offer(&artist, &listing_id, &5_000_000_i128, &token_id);
+    client.make_offer(&artist, &listing_id, &5_000_000_i128, &token_id, &None);
 }
 
 #[test]
@@ -1281,7 +1281,7 @@ fn test_make_offer_on_nonexistent_listing_fails() {
     let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
     client.set_admin(&artist);
 
-    client.make_offer(&buyer, &999u64, &5_000_000_i128, &token_id);
+    client.make_offer(&buyer, &999u64, &5_000_000_i128, &token_id, &None);
 }
 
 #[test]
@@ -1291,7 +1291,7 @@ fn test_withdraw_offer_success() {
     client.add_token_to_whitelist(&token_id);
 
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
 
     client.withdraw_offer(&buyer, &offer_id);
 
@@ -1310,7 +1310,7 @@ fn test_accept_offer_success() {
     client.add_token_to_whitelist(&token_id);
 
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
 
     client.accept_offer(&artist, &offer_id);
 
@@ -1338,7 +1338,7 @@ fn test_accept_offer_reentrancy_guard() {
     client.add_token_to_whitelist(&token_id);
 
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
 
     // Simulate a nested accept_offer while the listing lock is held (e.g. payout token callback).
     env.as_contract(&contract_id, || {
@@ -1354,7 +1354,7 @@ fn test_reject_offer_success() {
     client.add_token_to_whitelist(&token_id);
 
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
 
     client.reject_offer(&artist, &offer_id);
 
@@ -1383,9 +1383,9 @@ fn test_accept_offer_rejects_others() {
 
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
 
-    let offer_id_1 = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
-    let offer_id_2 = client.make_offer(&buyer2, &listing_id, &7_000_000_i128, &token_id);
-    let offer_id_3 = client.make_offer(&buyer3, &listing_id, &3_000_000_i128, &token_id);
+    let offer_id_1 = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
+    let offer_id_2 = client.make_offer(&buyer2, &listing_id, &7_000_000_i128, &token_id, &None);
+    let offer_id_3 = client.make_offer(&buyer3, &listing_id, &3_000_000_i128, &token_id, &None);
 
     // Accept offer 2
     client.accept_offer(&artist, &offer_id_2);
@@ -1599,7 +1599,7 @@ fn test_update_listing_with_pending_offer_fails() {
     let id = create_test_listing(&env, &client, &artist, &token_id);
 
     // Add a pending offer
-    client.make_offer(&buyer, &id, &5_000_000, &token_id);
+    client.make_offer(&buyer, &id, &5_000_000, &token_id, &None);
 
     // Try to update listing - Should fail
     let result = env.as_contract(&contract_id, || {
@@ -1803,7 +1803,7 @@ fn test_accept_offer_emits_protocol_fee_collected_event() {
     );
 
     let offer_amount = 8_000_000_i128;
-    let offer_id = client.make_offer(&buyer, &listing_id, &offer_amount, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &offer_amount, &token_id, &None);
     client.accept_offer(&artist, &offer_id);
 
     // Expected fee: offer_amount * 500 / 10_000 = 400_000
@@ -2135,7 +2135,7 @@ fn test_make_offer_emits_offer_made_event() {
     client.add_token_to_whitelist(&token_id);
 
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
 
     assert!(
         has_event_with_topic(&env.events().all(), "ofr_made"),
@@ -2150,7 +2150,7 @@ fn test_accept_offer_emits_offer_accepted_event() {
     client.add_token_to_whitelist(&token_id);
 
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
     client.accept_offer(&artist, &offer_id);
 
     assert!(
@@ -2166,7 +2166,7 @@ fn test_reject_offer_emits_offer_rejected_event() {
     client.add_token_to_whitelist(&token_id);
 
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
     client.reject_offer(&artist, &offer_id);
 
     assert!(
@@ -2182,7 +2182,7 @@ fn test_withdraw_offer_emits_offer_withdrawn_event() {
     client.add_token_to_whitelist(&token_id);
 
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
     client.withdraw_offer(&buyer, &offer_id);
 
     assert!(
@@ -2448,7 +2448,7 @@ fn test_make_offer_while_paused_fails() {
     client.add_token_to_whitelist(&token_id);
     let id = create_test_listing(&env, &client, &artist, &token_id);
     client.admin_pause(&artist);
-    client.make_offer(&buyer, &id, &5_000_000_i128, &token_id);
+    client.make_offer(&buyer, &id, &5_000_000_i128, &token_id, &None);
 }
 
 #[test]
@@ -2490,7 +2490,7 @@ fn test_make_offer_zero_amount_fails() {
     client.set_admin(&artist);
     client.add_token_to_whitelist(&token_id);
     let id = create_test_listing(&env, &client, &artist, &token_id);
-    client.make_offer(&buyer, &id, &0_i128, &token_id);
+    client.make_offer(&buyer, &id, &0_i128, &token_id, &None);
 }
 
 #[test]
@@ -2500,7 +2500,7 @@ fn test_make_offer_negative_amount_fails() {
     client.set_admin(&artist);
     client.add_token_to_whitelist(&token_id);
     let id = create_test_listing(&env, &client, &artist, &token_id);
-    client.make_offer(&buyer, &id, &-1_000_i128, &token_id);
+    client.make_offer(&buyer, &id, &-1_000_i128, &token_id, &None);
 }
 
 #[test]
@@ -2510,7 +2510,7 @@ fn test_accept_already_accepted_offer_fails() {
     client.set_admin(&artist);
     client.add_token_to_whitelist(&token_id);
     let id = create_test_listing(&env, &client, &artist, &token_id);
-    let offer_id = client.make_offer(&buyer, &id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &id, &5_000_000_i128, &token_id, &None);
     client.accept_offer(&artist, &offer_id);
     // Second accept on the same (now non-pending) offer should panic
     client.accept_offer(&artist, &offer_id);
@@ -2523,7 +2523,7 @@ fn test_reject_withdrawn_offer_fails() {
     client.set_admin(&artist);
     client.add_token_to_whitelist(&token_id);
     let id = create_test_listing(&env, &client, &artist, &token_id);
-    let offer_id = client.make_offer(&buyer, &id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &id, &5_000_000_i128, &token_id, &None);
     client.withdraw_offer(&buyer, &offer_id);
     // Reject a withdrawn offer â€” status is no longer Pending
     client.reject_offer(&artist, &offer_id);
@@ -3489,7 +3489,7 @@ fn test_accept_offer_uses_snapshotted_fee_not_raised_global() {
 
     // Buyer places an offer
     let offer_amount = 8_000_000_i128;
-    let offer_id = client.make_offer(&buyer, &listing_id, &offer_amount, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &offer_amount, &token_id, &None);
 
     // Admin raises global fee AFTER listing and offer creation
     client.set_protocol_fee(&artist, &500u32); // 5%
@@ -3721,7 +3721,7 @@ fn test_pause_matrix_make_offer() {
     client.add_token_to_whitelist(&token_id);
     let id = create_listing_with_fee(&env, &client, &artist, &token_id, &collection_id, 1_000_000);
     client.admin_pause(&artist);
-    client.make_offer(&buyer, &id, &500_000, &token_id);
+    client.make_offer(&buyer, &id, &500_000, &token_id, &None);
 }
 
 // â”€â”€ Pause matrix: withdraw_offer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3733,7 +3733,7 @@ fn test_pause_matrix_withdraw_offer() {
     client.set_admin(&artist);
     client.add_token_to_whitelist(&token_id);
     let id = create_listing_with_fee(&env, &client, &artist, &token_id, &collection_id, 1_000_000);
-    let offer_id = client.make_offer(&buyer, &id, &500_000, &token_id);
+    let offer_id = client.make_offer(&buyer, &id, &500_000, &token_id, &None);
     client.admin_pause(&artist);
     client.withdraw_offer(&buyer, &offer_id);
 }
@@ -3747,7 +3747,7 @@ fn test_pause_matrix_reject_offer() {
     client.set_admin(&artist);
     client.add_token_to_whitelist(&token_id);
     let id = create_listing_with_fee(&env, &client, &artist, &token_id, &collection_id, 1_000_000);
-    let offer_id = client.make_offer(&buyer, &id, &500_000, &token_id);
+    let offer_id = client.make_offer(&buyer, &id, &500_000, &token_id, &None);
     client.admin_pause(&artist);
     client.reject_offer(&artist, &offer_id);
 }
@@ -3761,7 +3761,7 @@ fn test_pause_matrix_accept_offer() {
     client.set_admin(&artist);
     client.add_token_to_whitelist(&token_id);
     let id = create_listing_with_fee(&env, &client, &artist, &token_id, &collection_id, 1_000_000);
-    let offer_id = client.make_offer(&buyer, &id, &500_000, &token_id);
+    let offer_id = client.make_offer(&buyer, &id, &500_000, &token_id, &None);
     client.admin_pause(&artist);
     client.accept_offer(&artist, &offer_id);
 }
@@ -3842,7 +3842,7 @@ fn test_full_lifecycle_resumes_after_unpause() {
 
     // Full lifecycle must work after unpausing
     let listing_id = create_listing_with_fee(&env, &client, &artist, &token_id, &collection_id, 1_000_000);
-    let offer_id = client.make_offer(&buyer, &listing_id, &500_000, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &500_000, &token_id, &None);
     client.withdraw_offer(&buyer, &offer_id);
     client.cancel_listing(&artist, &listing_id);
     let listing = client.get_listing(&listing_id);
@@ -3976,7 +3976,7 @@ fn test_cancel_artist_listings_refunds_pending_offers() {
 
     // Buyer makes an offer
     let offer_amount = 5_000_000_i128;
-    let offer_id = client.make_offer(&buyer, &listing_id, &offer_amount, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &offer_amount, &token_id, &None);
 
     // Check buyer's balance after offer escrow
     let token = TokenClient::new(&env, &token_id);
@@ -4111,7 +4111,7 @@ fn test_offer_survives_ttl_threshold_with_frequent_reads() {
     client.add_token_to_whitelist(&token_id);
 
     let listing_id = create_listing_with_fee(&env, &client, &artist, &token_id, &collection_id, 10_000_000);
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
 
     // Advance ledger close to the TTL threshold
     env.ledger().with_mut(|l| {
@@ -4139,7 +4139,7 @@ fn test_listing_offers_index_survives_ttl_threshold() {
     client.add_token_to_whitelist(&token_id);
 
     let listing_id = create_listing_with_fee(&env, &client, &artist, &token_id, &collection_id, 10_000_000);
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
 
     // Advance ledger close to the TTL threshold
     env.ledger().with_mut(|l| {
@@ -4592,7 +4592,7 @@ fn test_err_cannot_offer_own_listing() {
     client.set_admin(&artist);
     client.add_token_to_whitelist(&token_id);
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    client.make_offer(&artist, &listing_id, &5_000_000_i128, &token_id); // own listing
+    client.make_offer(&artist, &listing_id, &5_000_000_i128, &token_id, &None); // own listing
 }
 
 #[test]
@@ -4602,7 +4602,7 @@ fn test_err_offer_not_pending_double_withdraw() {
     client.set_admin(&artist);
     client.add_token_to_whitelist(&token_id);
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
     client.withdraw_offer(&buyer, &offer_id);
     client.withdraw_offer(&buyer, &offer_id); // no longer Pending
 }
@@ -4614,7 +4614,7 @@ fn test_err_insufficient_offer_amount() {
     client.set_admin(&artist);
     client.add_token_to_whitelist(&token_id);
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    client.make_offer(&buyer, &listing_id, &0_i128, &token_id); // amount <= 0
+    client.make_offer(&buyer, &listing_id, &0_i128, &token_id, &None); // amount <= 0
 }
 
 #[test]
@@ -4624,7 +4624,7 @@ fn test_err_reentrancy_guard_accept_offer() {
     client.set_admin(&artist);
     client.add_token_to_whitelist(&token_id);
     let listing_id = create_test_listing(&env, &client, &artist, &token_id);
-    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id);
+    let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
     // Hold the listing lock to simulate re-entry.
     env.as_contract(&contract_id, || {
         assert!(crate::storage::acquire_listing_lock(&env, listing_id));
