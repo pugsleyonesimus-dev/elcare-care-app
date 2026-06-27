@@ -4,6 +4,15 @@ import redis from '../redis.js';
 import { cacheMiddleware } from './cache-middleware.js';
 import { strictRateLimiter } from './rate-limit-middleware.js';
 import { badRequest, notFound, internalError } from './errors.js';
+import {
+  validateQuery,
+  listingsQuerySchema,
+  auctionsQuerySchema,
+  offersQuerySchema,
+  walletActivityQuerySchema,
+  collectionsQuerySchema,
+  statsQuerySchema,
+} from './query-schemas.js';
 
 // ── SSE registry ───────────────────────────────────────────────────────────────
 
@@ -16,7 +25,7 @@ interface SSEEvent {
 
 let sseEventCounter = 0;
 const sseBuffer: SSEEvent[] = [];
-const sseClients: Map<Response, number> = new Map(); // client → last-sent id
+const sseClients: Map<Response, number> = new Map();
 
 function nextSseId(): number {
   return ++sseEventCounter;
@@ -27,7 +36,6 @@ export function emitSSEEvent(event: any) {
   const dataStr = JSON.stringify(event, (_k, v) => typeof v === 'bigint' ? v.toString() : v);
   const payload: SSEEvent = { id, data: dataStr };
 
-  // Append to ring buffer, drop oldest when full
   sseBuffer.push(payload);
   if (sseBuffer.length > SSE_BUFFER_SIZE) sseBuffer.shift();
 
@@ -67,10 +75,6 @@ const serialize = (obj: any) =>
     typeof value === 'bigint' ? value.toString() : value
   ));
 
-function normaliseGateway(gateway: string): string {
-  return gateway.endsWith('/') ? gateway : `${gateway}/`;
-}
-
 // ── GET /events (SSE) ─────────────────────────────────────────────────────────
 
 router.get('/events', (req: Request, res: Response) => {
@@ -84,7 +88,6 @@ router.get('/events', (req: Request, res: Response) => {
 
   sseClients.set(res, resumeFrom ?? sseEventCounter);
 
-  // Replay missed events
   if (resumeFrom !== null && !isNaN(resumeFrom)) {
     const missed = sseBuffer.filter(e => e.id > resumeFrom);
     for (const ev of missed) {
@@ -101,33 +104,30 @@ router.get('/events', (req: Request, res: Response) => {
 
 // ── GET /listings ─────────────────────────────────────────────────────────────
 
-router.get('/listings', async (req: Request, res: Response, next: NextFunction) => {
-  const { artist, owner, status, limit, offset, minPrice, maxPrice, search } = req.query;
+router.get('/listings', validateQuery(listingsQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { artist, owner, status, limit, offset, minPrice, maxPrice, search } =
+    (req as any).validatedQuery;
   try {
     const where: any = {};
-    if (artist) where.artist = artist as string;
-    if (owner) where.owner = owner as string;
-    if (status) where.status = status as string;
+    if (artist) where.artist = artist;
+    if (owner) where.owner = owner;
+    if (status) where.status = status;
 
-    if (minPrice || maxPrice) {
+    if (minPrice !== undefined || maxPrice !== undefined) {
       where.price = {};
-      if (minPrice) where.price.gte = minPrice as string;
-      if (maxPrice) where.price.lte = maxPrice as string;
+      if (minPrice !== undefined) where.price.gte = String(minPrice);
+      if (maxPrice !== undefined) where.price.lte = String(maxPrice);
     }
 
     if (search) {
-      const q = search as string;
       where.OR = [
-        { artist: { contains: q, mode: 'insensitive' } },
-        { collection: { contains: q, mode: 'insensitive' } },
+        { artist: { contains: search, mode: 'insensitive' } },
+        { collection: { contains: search, mode: 'insensitive' } },
       ];
     }
 
-    const take = Math.max(0, Math.min(Number(limit || 0), 1000)) || undefined;
-    const rawOffset = Number(offset || 0);
-    const skip = Number.isFinite(rawOffset) && rawOffset > 0
-      ? Math.min(rawOffset, 10_000)
-      : undefined;
+    const take = limit || undefined;
+    const skip = offset || undefined;
 
     const results = await prisma.listing.findMany({
       where,
@@ -156,7 +156,6 @@ router.get('/listings/:id', async (req: Request, res: Response, next: NextFuncti
       where: { listingId: BigInt(id as string) },
     });
     if (!listing) return next(notFound('Listing not found'));
-
     return res.json(serialize(listing));
   } catch (err) {
     next(internalError('Failed to fetch listing details'));
@@ -183,12 +182,12 @@ router.get('/listings/:id/history', async (req: Request, res: Response, next: Ne
 
 // ── GET /auctions ─────────────────────────────────────────────────────────────
 
-router.get('/auctions', async (req: Request, res: Response, next: NextFunction) => {
-  const { creator, status } = req.query;
+router.get('/auctions', validateQuery(auctionsQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { creator, status } = (req as any).validatedQuery;
   try {
     const where: any = {};
-    if (creator) where.creator = creator as string;
-    if (status) where.status = status as string;
+    if (creator) where.creator = creator;
+    if (status) where.status = status;
 
     const results = await prisma.auction.findMany({
       where,
@@ -220,15 +219,12 @@ router.get('/auctions/:id', async (req: Request, res: Response, next: NextFuncti
 
 // ── GET /offers ───────────────────────────────────────────────────────────────
 
-router.get('/offers', async (req: Request, res: Response, next: NextFunction) => {
-  const { listing_id } = req.query;
+router.get('/offers', validateQuery(offersQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { listing_id } = (req as any).validatedQuery;
   try {
     const where: any = {};
     if (listing_id) {
-      if (!/^\d+$/.test(listing_id as string)) {
-        return next(badRequest('Invalid listing_id format'));
-      }
-      where.listingId = BigInt(listing_id as string);
+      where.listingId = BigInt(listing_id);
     }
 
     const results = await prisma.offer.findMany({
@@ -259,12 +255,12 @@ router.get('/activity/recent', cacheMiddleware(30), async (req: Request, res: Re
 
 // ── GET /collections ──────────────────────────────────────────────────────────
 
-router.get('/collections', cacheMiddleware(60), async (req: Request, res: Response, next: NextFunction) => {
-  const { kind, creator } = req.query;
+router.get('/collections', cacheMiddleware(60), validateQuery(collectionsQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { kind, creator } = (req as any).validatedQuery;
   try {
     const where: any = {};
-    if (kind)    where.kind    = kind as string;
-    if (creator) where.creator = creator as string;
+    if (kind)    where.kind    = kind;
+    if (creator) where.creator = creator;
     const cacheKey = `collections:${kind ?? ''}:${creator ?? ''}`;
     const results = await getCached(cacheKey, CACHE_TTL_SECONDS, () =>
       prisma.collection.findMany({
@@ -295,9 +291,10 @@ router.get('/creators/:address/collections', async (req: Request, res: Response,
 
 // ── GET /wallets/:address/activity ────────────────────────────────────────────
 
-router.get('/wallets/:address/activity', strictRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/wallets/:address/activity', strictRateLimiter, validateQuery(walletActivityQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
   const address = req.params.address as string;
-  const take = Math.min(parseInt(String(req.query.limit || '50'), 10) || 50, 200);
+  const { limit } = (req as any).validatedQuery;
+  const take = Math.min(limit ?? 50, 200);
   try {
     const jsonKeys = ['buyer', 'artist', 'offerer', 'bidder', 'winner', 'creator'];
     const fromJson = jsonKeys.map((path) => ({
@@ -360,10 +357,9 @@ router.get('/wallets/:address/royalty-stats', strictRateLimiter, async (req: Req
 
 // ── GET /stats ────────────────────────────────────────────────────────────────
 
-router.get('/stats', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/stats', validateQuery(statsQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { from, to, range } = (req as any).validatedQuery;
   try {
-    const { from, to, range } = req.query;
-
     let dateFrom: Date | undefined;
     let dateTo: Date | undefined;
 
@@ -374,10 +370,8 @@ router.get('/stats', async (req: Request, res: Response, next: NextFunction) => 
         dateFrom = new Date(now.getTime() - 24 * 60 * 60 * 1000);
       } else if (range === 'week') {
         dateFrom = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      } else if (range === 'month') {
-        dateFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
       } else {
-        return next(badRequest('Invalid range value. Use day, week, or month.'));
+        dateFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
       }
     } else {
       if (from) {

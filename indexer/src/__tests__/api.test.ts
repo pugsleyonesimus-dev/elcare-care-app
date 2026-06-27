@@ -132,14 +132,10 @@ describe('GET /listings', () => {
     expect(res.body.error).toBeDefined();
   });
 
-  it('caps offset at 10000', async () => {
-    mockPrisma.listing.findMany.mockResolvedValue([]);
-
-    await request(app).get('/listings?offset=50000');
-
-    expect(mockPrisma.listing.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ skip: 10000 })
-    );
+  it('rejects offset above 10000 with 400', async () => {
+    const res = await request(app).get('/listings?offset=50000');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
   });
 });
 
@@ -399,7 +395,7 @@ describe('GET /stats', () => {
   it('returns 400 for invalid range', async () => {
     const res = await request(app).get('/stats?range=invalid');
     expect(res.status).toBe(400);
-    expect(res.body.error.message).toBe('Invalid range value. Use day, week, or month.');
+    expect(res.body.error).toBeDefined();
   });
 
   it('returns stats with from/to query params', async () => {
@@ -434,12 +430,10 @@ describe('GET /wallets/:address/activity — extended', () => {
     );
   });
 
-  it('caps limit at 200 when a higher value is requested', async () => {
-    mockPrisma.marketplaceEvent.findMany.mockResolvedValue([]);
-    await request(app).get('/wallets/GTEST/activity?limit=500');
-    expect(mockPrisma.marketplaceEvent.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ take: 200 })
-    );
+  it('rejects limit above 200 with 400', async () => {
+    const res = await request(app).get('/wallets/GTEST/activity?limit=500');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
   });
 
   it('returns an empty array when the wallet has no matching events', async () => {
