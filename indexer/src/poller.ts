@@ -10,6 +10,7 @@ import {
 import { recordProgress } from './stall.js';
 import { collectMarketplaceEvents, MAX_LEDGER_WINDOW } from './event-sync.js';
 import redis from './redis.js';
+import { logger } from './logger.js';
 
 dotenv.config();
 
@@ -41,10 +42,10 @@ function setupSignalHandlers() {
   const onSignal = (sig: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`[Shutdown] Received ${sig} — attempting graceful shutdown`);
+    logger.info('Shutdown signal received', { signal: sig });
     // Start async cleanup; don't await here since signals may be re-delivered
     gracefulShutdown().catch((err) => {
-      console.error('[Shutdown] Graceful shutdown failed:', err);
+      logger.error('Graceful shutdown failed', { err });
       process.exit(1);
     });
   };
@@ -53,7 +54,7 @@ function setupSignalHandlers() {
 }
 
 async function gracefulShutdown() {
-  console.log('[Shutdown] Closing resources: Prisma + Redis');
+  logger.info('Shutdown: closing resources');
   const cleanup = Promise.allSettled([
     prisma.$disconnect(),
     // redis may not be connected in some test environments
@@ -66,10 +67,10 @@ async function gracefulShutdown() {
       cleanup,
       new Promise((_, rej) => setTimeout(() => rej(new Error('shutdown timeout')), 10000)),
     ]);
-    console.log('[Shutdown] Cleanup complete, exiting');
+    logger.info('Shutdown: cleanup complete');
     process.exit(0);
   } catch (err) {
-    console.error('[Shutdown] Cleanup timed out or errored:', err);
+    logger.error('Shutdown: cleanup timed out', { err });
     process.exit(1);
   }
 }
@@ -85,7 +86,7 @@ const server = new rpc.Server(RPC_URL);
  * Called when a chain re-org is detected.
  */
 export async function revertLedgers(safeAtLedger: number): Promise<void> {
-  console.warn(`[Reorg] Rolling back to ledger ${safeAtLedger}`);
+  logger.warn('Reorg: rolling back', { safeAtLedger });
   await prisma.$transaction(async (tx) => {
     // Remove events that occurred after the safe checkpoint
     await tx.marketplaceEvent.deleteMany({
@@ -114,7 +115,7 @@ export async function revertLedgers(safeAtLedger: number): Promise<void> {
       data: { lastLedger: safeAtLedger, lastLedgerHash: null },
     });
   });
-  console.log(`[Reorg] Rollback complete. Resuming from ledger ${safeAtLedger + 1}`);
+  logger.info('Reorg: rollback complete', { resumeFromLedger: safeAtLedger + 1 });
 }
 
 /** SyncState fields for a ledger advance; omits hash when fetch failed so we keep the prior checkpoint. */
@@ -142,14 +143,14 @@ export async function validateHashContinuity(
       if (ledgersRes.ledgers && ledgersRes.ledgers.length > 0) {
         const networkLedger = ledgersRes.ledgers[0];
         if (networkLedger.hash !== syncState.lastLedgerHash) {
-          console.warn(`Chain re-org detected at ledger ${syncState.lastLedger}! DB hash: ${syncState.lastLedgerHash}, Network hash: ${networkLedger.hash}`);
+          logger.warn('Chain re-org detected', { ledger: syncState.lastLedger, dbHash: syncState.lastLedgerHash, networkHash: networkLedger.hash });
           const toLedger = Math.max(0, syncState.lastLedger - 1);
           await revertLedgers(toLedger);
           return false;
         }
       }
     } catch (err) {
-      console.error(`Error validating ledger hash continuity at ledger ${syncState.lastLedger}:`, err);
+      logger.error('Hash continuity check failed', { ledger: syncState.lastLedger, err });
     }
   }
   return true;
@@ -161,7 +162,7 @@ export async function startPolling() {
     throw new Error('At least one of MARKETPLACE_CONTRACT_ID or LAUNCHPAD_CONTRACT_ID must be set');
   }
 
-  console.log(`Starting indexer poller for contract(s): ${contractIds.join(', ')}`);
+  logger.info('Indexer poller starting', { contractIds });
 
   while (!shuttingDown) {
     try {
@@ -185,15 +186,14 @@ export async function startPolling() {
         const latestRes = await server.getLatestLedger();
         networkLatestLedger = latestRes.sequence;
       } catch (err) {
-        console.error({ msg: 'Failed to fetch latest ledger', err });
+        logger.error('Failed to fetch latest ledger', { err });
         throw err;
       }
 
       networkLatestLedgerGauge.set(networkLatestLedger);
 
       if (syncState.lastLedger > 0 && networkLatestLedger < syncState.lastLedger) {
-        console.warn({
-          msg: 'Network latest ledger moved behind indexed state',
+        logger.warn('Network latest ledger moved behind indexed state', {
           indexedLedger: syncState.lastLedger,
           networkLatestLedger,
         });
@@ -206,8 +206,7 @@ export async function startPolling() {
       let skippedRange: { from: number; to: number } | null = null;
       if (startLedger < windowFloor) {
         skippedRange = { from: startLedger, to: windowFloor - 1 };
-        console.warn({
-          msg: 'Skipping ledger gap outside the live RPC window',
+        logger.warn('Skipping ledger gap outside the live RPC window', {
           skippedRange,
           windowFloor,
           networkLatest: networkLatestLedger,
@@ -235,7 +234,7 @@ export async function startPolling() {
             latestHash = ledgersRes.ledgers[0].hash;
           }
         } catch (err) {
-          console.error(`Failed to fetch hash for ledger ${maxLedger}:`, err);
+          logger.error('Failed to fetch hash for ledger', { ledger: maxLedger, err });
         }
 
         const { updatedState, newEvents } = await prisma.$transaction(async (tx) => {
@@ -262,7 +261,7 @@ export async function startPolling() {
             latestHash = ledgersRes.ledgers[0].hash;
           }
         } catch (err) {
-          console.error(`Failed to fetch hash for latest network ledger ${networkLatestLedger}:`, err);
+          logger.error('Failed to fetch hash for latest network ledger', { ledger: networkLatestLedger, err });
         }
 
         const updatedState = await prisma.syncState.update({
@@ -283,11 +282,10 @@ export async function startPolling() {
         BASE_BACKOFF_MS * Math.pow(2, consecutiveErrors - 1),
         MAX_BACKOFF_MS
       );
-      console.error({
-        msg: 'Error in polling loop',
+      logger.error('Error in polling loop', {
         consecutiveErrors,
         backoffMs: backoff,
-        error: error instanceof Error ? error.message : String(error),
+        err: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
       await new Promise((resolve) => setTimeout(resolve, backoff));
@@ -464,7 +462,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         },
       });
-      if (count === 0) console.warn(`LISTING_UPDATED: listing ${listingId} not found at ledger ${ledgerSequence}`);
+      if (count === 0) logger.warn('LISTING_UPDATED: listing not found', { listingId: listingId?.toString(), ledger: ledgerSequence });
       break;
     }
 
@@ -477,7 +475,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         },
       });
-      if (count === 0) console.error(`ARTWORK_SOLD: listing ${listingId} not found — sale not recorded at ledger ${ledgerSequence}`);
+      if (count === 0) logger.error('ARTWORK_SOLD: listing not found — sale not recorded', { listingId: listingId?.toString(), ledger: ledgerSequence });
       break;
     }
 
@@ -489,7 +487,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         },
       });
-      if (count === 0) console.warn(`LISTING_CANCELLED: listing ${listingId} not found at ledger ${ledgerSequence}`);
+      if (count === 0) logger.warn('LISTING_CANCELLED: listing not found', { listingId: listingId?.toString(), ledger: ledgerSequence });
       break;
     }
     
@@ -553,7 +551,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         }
       });
-      if (count === 0) console.warn(`BID_PLACED: auction ${listingId} not found at ledger ${ledgerSequence}`);
+      if (count === 0) logger.warn('BID_PLACED: auction not found', { auctionId: listingId?.toString(), ledger: ledgerSequence });
       break;
     }
 
@@ -567,7 +565,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         }
       });
-      if (count === 0) console.error(`AUCTION_RESOLVED: auction ${listingId} not found — resolution not recorded at ledger ${ledgerSequence}`);
+      if (count === 0) logger.error('AUCTION_RESOLVED: auction not found — resolution not recorded', { auctionId: listingId?.toString(), ledger: ledgerSequence });
       break;
     }
 
@@ -579,7 +577,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         },
       });
-      if (count === 0) console.warn(`AUCTION_CANCELLED: auction ${listingId} not found at ledger ${ledgerSequence}`);
+      if (count === 0) logger.warn('AUCTION_CANCELLED: auction not found', { auctionId: listingId?.toString(), ledger: ledgerSequence });
       break;
     }
 
@@ -624,7 +622,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         }
       });
-      if (listingCount === 0) console.error(`OFFER_ACCEPTED: listing ${data.listing_id} not found — offer ${data.offer_id} accepted but listing not updated at ledger ${ledgerSequence}`);
+      if (listingCount === 0) logger.error('OFFER_ACCEPTED: listing not found — offer accepted but listing not updated', { listingId: data.listing_id?.toString(), offerId: data.offer_id?.toString(), ledger: ledgerSequence });
       break;
     }
 

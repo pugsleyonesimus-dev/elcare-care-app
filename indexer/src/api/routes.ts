@@ -4,6 +4,7 @@ import prisma from '../db.js';
 import redis from '../redis.js';
 import { cacheMiddleware } from './cache-middleware.js';
 import { strictRateLimiter } from './rate-limit-middleware.js';
+import { logger } from '../logger.js';
 
 // SSE clients registry
 const sseClients: Response[] = [];
@@ -90,7 +91,7 @@ router.get('/listings', async (req: Request, res: Response) => {
 
         res.json(serialize(results));
     } catch (err) {
-        console.error('Error details:', err);
+        logger.error('Request failed', { err });
         res.status(500).json({ error: 'Failed to fetch listings' });
     }
 });
@@ -107,7 +108,7 @@ router.get('/listings/:id', async (req: Request, res: Response) => {
         const out: any = serialize(listing);
         return res.json(out);
     } catch (err) {
-        console.error('Error details:', err);
+        logger.error('Request failed', { err });
         res.status(500).json({ error: 'Failed to fetch listing details' });
     }
 });
@@ -125,7 +126,7 @@ router.get('/listings/:id/history', async (req: Request, res: Response) => {
         });
         res.json(serialize(results));
     } catch (err) {
-        console.error('Error details:', err);
+        logger.error('Request failed', { err });
         res.status(500).json({ error: 'Failed to fetch listing history' });
     }
 });
@@ -144,7 +145,7 @@ router.get('/auctions', async (req: Request, res: Response) => {
         });
         res.json(serialize(results));
     } catch (err) {
-        console.error('Error details:', err);
+        logger.error('Request failed', { err });
         res.status(500).json({ error: 'Failed to fetch auctions' });
     }
 });
@@ -164,7 +165,7 @@ router.get('/auctions/:id', async (req: Request, res: Response) => {
         }
         res.json(serialize(result));
     } catch (err) {
-        console.error('Error details:', err);
+        logger.error('Request failed', { err });
         res.status(500).json({ error: 'Failed to fetch auction' });
     }
 });
@@ -187,7 +188,7 @@ router.get('/offers', async (req: Request, res: Response) => {
         });
         res.json(serialize(results));
     } catch (err) {
-        console.error('Error details:', err);
+        logger.error('Request failed', { err });
         res.status(500).json({ error: 'Failed to fetch offers' });
     }
 });
@@ -204,7 +205,7 @@ router.get('/activity/recent', cacheMiddleware(30), async (req: Request, res: Re
         );
         res.json(serialize(results));
     } catch (err) {
-        console.error('Error details:', err);
+        logger.error('Request failed', { err });
         res.status(500).json({ error: 'Failed to fetch recent activity' });
     }
 });
@@ -227,7 +228,7 @@ router.get('/collections', cacheMiddleware(60), async (req: Request, res: Respon
         );
         res.json(serialize(results));
     } catch (err) {
-        console.error('Error details:', err);
+        logger.error('Request failed', { err });
         res.status(500).json({ error: 'Failed to fetch collections' });
     }
 });
@@ -242,7 +243,7 @@ router.get('/creators/:address/collections', async (req: Request, res: Response)
         });
         res.json(serialize(results));
     } catch (err) {
-        console.error('Error details:', err);
+        logger.error('Request failed', { err });
         res.status(500).json({ error: 'Failed to fetch creator collections' });
     }
 });
@@ -267,7 +268,7 @@ router.get('/wallets/:address/activity', strictRateLimiter, async (req: Request,
 
         res.json(serialize(events));
     } catch (err) {
-        console.error('Error details:', err);
+        logger.error('Request failed', { err });
         res.status(500).json({ error: 'Failed to fetch wallet activity' });
     }
 });
@@ -309,7 +310,7 @@ router.get('/wallets/:address/royalty-stats', strictRateLimiter, async (req: Req
             lastPayout: lastSale ? lastSale.updatedAtLedger * 1000 : 0,
         });
     } catch (err) {
-        console.error('Error details:', err);
+        logger.error('Request failed', { err });
         res.status(500).json({ error: 'Failed to fetch royalty stats' });
     }
 });
@@ -426,7 +427,7 @@ router.get('/stats', async (req: Request, res: Response) => {
             }),
         });
     } catch (err) {
-        console.error('Error details:', err);
+        logger.error('Request failed', { err });
         res.status(500).json({ error: 'Failed to fetch stats' });
     }
 });

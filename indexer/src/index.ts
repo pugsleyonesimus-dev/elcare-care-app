@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import routes from './api/routes.js';
 import { startPolling } from './poller.js';
 import { isStalled } from './stall.js';
+import { logger } from './logger.js';
 import { rateLimiter } from './api/rate-limit-middleware.js';
 import { metricsMiddleware, handleMetrics } from './metrics.js';
 import prisma from './db.js';
@@ -13,7 +14,7 @@ dotenv.config();
 
 // Fail fast — refuse to start if the contract ID is missing.
 if (!process.env.MARKETPLACE_CONTRACT_ID) {
-  console.error('[Startup] MARKETPLACE_CONTRACT_ID is not set. Exiting.');
+  logger.error('MARKETPLACE_CONTRACT_ID is not set — exiting');
   process.exit(1);
 }
 
@@ -70,11 +71,11 @@ app.get('/readyz', async (req: express.Request, res: express.Response) => {
 
 // Start the server
 app.listen(PORT, () => {
-    console.log(`Indexer API listening on http://localhost:${PORT}`);
+    logger.info('Indexer API listening', { port: PORT });
     
     // Start the background polling loop
     startPolling().catch((err) => {
-        console.error('Fatal error in poller:', err);
+        logger.error('Fatal error in poller', { err });
         process.exit(1);
     });
 });

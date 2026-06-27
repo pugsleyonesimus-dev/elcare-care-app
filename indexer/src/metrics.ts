@@ -1,5 +1,6 @@
 import client from 'prom-client';
 import express from 'express';
+import { logger } from './logger.js';
 
 // Enable default metrics (CPU, memory, etc.)
 client.collectDefaultMetrics();
@@ -62,7 +63,7 @@ export async function handleMetrics(req: express.Request, res: express.Response)
     res.set('Content-Type', client.register.contentType);
     res.end(await client.register.metrics());
   } catch (err) {
-    console.error('Error details:', err);
+    logger.error('Failed to retrieve metrics', { err });
     res.status(500).end('Failed to retrieve metrics');
   }
 }
