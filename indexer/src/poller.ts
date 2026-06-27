@@ -8,6 +8,7 @@ import {
   syncLatencyGauge
 } from './metrics.js';
 import { collectMarketplaceEvents, MAX_LEDGER_WINDOW } from './event-sync.js';
+import { withRetry } from './retry.js';
 import redis from './redis.js';
 
 dotenv.config();
@@ -25,6 +26,13 @@ let consecutiveErrors = 0;
 
 // Graceful shutdown coordination
 let shuttingDown = false;
+let shutdownStarted = false;
+const shutdownHooks: Array<() => Promise<void>> = [];
+
+/** Register an async cleanup function to run during graceful shutdown. */
+export function registerShutdownHook(fn: () => Promise<void>): void {
+  shutdownHooks.push(fn);
+}
 
 function getContractIds(): string[] {
   return [CONTRACT_ID, LAUNCHPAD_CONTRACT_ID].filter(Boolean);
@@ -51,19 +59,21 @@ function setupSignalHandlers() {
   process.on('SIGINT', () => onSignal('SIGINT'));
 }
 
-async function gracefulShutdown() {
-  console.log('[Shutdown] Closing resources: Prisma + Redis');
+export async function gracefulShutdown(): Promise<void> {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+
+  console.log('[Shutdown] Closing resources: Prisma + Redis + registered hooks');
   const cleanup = Promise.allSettled([
     prisma.$disconnect(),
-    // redis may not be connected in some test environments
     (redis && typeof redis.disconnect === 'function') ? redis.disconnect() : Promise.resolve(),
+    ...shutdownHooks.map((fn) => fn()),
   ]);
 
-  // Timeout fallback: force exit if cleanup hangs
   try {
     await Promise.race([
       cleanup,
-      new Promise((_, rej) => setTimeout(() => rej(new Error('shutdown timeout')), 10000)),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('shutdown timeout')), 10_000)),
     ]);
     console.log('[Shutdown] Cleanup complete, exiting');
     process.exit(0);
@@ -180,13 +190,10 @@ export async function startPolling() {
 
       // 3. Resolve start ledger, clamping to the safe RPC window on every poll
       let networkLatestLedger: number;
-      try {
-        const latestRes = await server.getLatestLedger();
-        networkLatestLedger = latestRes.sequence;
-      } catch (err) {
-        console.error({ msg: 'Failed to fetch latest ledger', err });
-        throw err;
-      }
+      networkLatestLedger = await withRetry(
+        () => server.getLatestLedger().then((r) => r.sequence),
+        { operation: 'getLatestLedger', maxAttempts: 5, baseDelayMs: 1_000 }
+      );
 
       networkLatestLedgerGauge.set(networkLatestLedger);
 
@@ -295,10 +302,9 @@ export async function startPolling() {
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
   }
 
-    // If the loop exited due to shutdown signal, ensure resources are cleaned
-    if (shuttingDown) {
-      await gracefulShutdown();
-    }
+  if (shuttingDown) {
+    await gracefulShutdown();
+  }
 }
 
 async function fetchListingFromChain(_listingId: bigint): Promise<any | null> {
