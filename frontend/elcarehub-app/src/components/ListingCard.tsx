@@ -8,7 +8,7 @@ import { useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { Listing, stroopsToXlm } from "@/lib/contract";
-import { ArtworkMetadata, fetchMetadata, cidToGatewayUrl } from "@/lib/ipfs";
+import { ArtworkMetadata, fetchMetadata, getGatewayUrls } from "@/lib/ipfs";
 import { useEffect } from "react";
 import { useWalletContext } from "@/context/WalletContext";
 import { useBuyArtwork } from "@/hooks/useMarketplace";
@@ -33,7 +33,7 @@ export function ListingCard({ listing, onPurchased }: ListingCardProps) {
   const { buy, isBuying, error: buyError } = useBuyArtwork(publicKey);
 
   const [metadata, setMetadata] = useState<ArtworkMetadata | null>(null);
-  const [imgError, setImgError] = useState(false);
+  const [gatewayIndex, setGatewayIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [showCheckout, setShowCheckout] = useState(false);
 
@@ -46,7 +46,17 @@ export function ListingCard({ listing, onPurchased }: ListingCardProps) {
       .finally(() => setIsLoading(false));
   }, [listing.metadata_cid]);
 
-  const imageUrl = metadata?.image ? cidToGatewayUrl(metadata.image) : null;
+  // Reset gateway index when metadata changes (new image to load).
+  useEffect(() => {
+    setGatewayIndex(0);
+  }, [metadata?.image]);
+
+  const imageUrls: string[] | null = metadata?.image
+    ? getGatewayUrls(metadata.image)
+    : null;
+
+  const currentImageUrl = imageUrls?.[gatewayIndex] ?? null;
+  const allGatewaysExhausted = imageUrls !== null && gatewayIndex >= imageUrls.length;
 
   const isOwn = publicKey === listing.artist;
 
@@ -72,13 +82,14 @@ export function ListingCard({ listing, onPurchased }: ListingCardProps) {
             <div className="flex h-full w-full items-center justify-center bg-gray-100 animate-pulse" aria-label="Loading artwork" data-testid="artwork-loading">
               <span className="sr-only">Loading artwork...</span>
             </div>
-          ) : imageUrl && !imgError ? (
+          ) : currentImageUrl && !allGatewaysExhausted ? (
             <Image
-              src={imageUrl}
+              key={currentImageUrl}
+              src={currentImageUrl}
               alt={metadata?.title ?? `Listing #${listing.listing_id}`}
               fill
               className="object-cover transition-transform duration-300 group-hover:scale-105"
-              onError={() => setImgError(true)}
+              onError={() => setGatewayIndex((i) => i + 1)}
               unoptimized
             />
           ) : (
