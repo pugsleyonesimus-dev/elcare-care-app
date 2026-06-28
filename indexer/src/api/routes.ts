@@ -7,11 +7,19 @@ import { strictRateLimiter } from './rate-limit-middleware.js';
 
 // SSE clients registry
 const sseClients: Response[] = [];
+
 export function emitSSEEvent(event: any) {
     const data = `data: ${JSON.stringify(event, (_k, v) => typeof v === 'bigint' ? v.toString() : v)}\n\n`;
     for (const client of sseClients) {
         try { client.write(data); } catch { /* ignore closed connections */ }
     }
+}
+
+export function closeSSEClients(): void {
+    for (const client of sseClients) {
+        try { client.end(); } catch { /* ignore */ }
+    }
+    sseClients.length = 0;
 }
 
 const router = Router();
