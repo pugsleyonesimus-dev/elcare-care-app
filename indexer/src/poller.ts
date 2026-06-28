@@ -9,15 +9,17 @@ import {
 } from './metrics.js';
 import { recordProgress } from './stall.js';
 import { collectMarketplaceEvents, MAX_LEDGER_WINDOW } from './event-sync.js';
+import { withRetry } from './retry.js';
 import redis from './redis.js';
-import { logger } from './logger.js';
+import { loadConfig } from './config.js';
 
 dotenv.config();
 
 const RPC_URL = process.env.STELLAR_RPC_URL || 'https://soroban-testnet.stellar.org';
 const CONTRACT_ID = process.env.MARKETPLACE_CONTRACT_ID || '';
 const LAUNCHPAD_CONTRACT_ID = process.env.LAUNCHPAD_CONTRACT_ID || '';
-const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || '5000');
+
+export const MAX_REORG_DEPTH = 100;
 
 // Retry back-off base in ms; doubles on each consecutive failure up to MAX_BACKOFF_MS.
 const BASE_BACKOFF_MS = 2_000;
@@ -27,6 +29,13 @@ let consecutiveErrors = 0;
 
 // Graceful shutdown coordination
 let shuttingDown = false;
+let shutdownStarted = false;
+const shutdownHooks: Array<() => Promise<void>> = [];
+
+/** Register an async cleanup function to run during graceful shutdown. */
+export function registerShutdownHook(fn: () => Promise<void>): void {
+  shutdownHooks.push(fn);
+}
 
 function getContractIds(): string[] {
   return [CONTRACT_ID, LAUNCHPAD_CONTRACT_ID].filter(Boolean);
@@ -53,19 +62,21 @@ function setupSignalHandlers() {
   process.on('SIGINT', () => onSignal('SIGINT'));
 }
 
-async function gracefulShutdown() {
-  logger.info('Shutdown: closing resources');
+export async function gracefulShutdown(): Promise<void> {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+
+  console.log('[Shutdown] Closing resources: Prisma + Redis + registered hooks');
   const cleanup = Promise.allSettled([
     prisma.$disconnect(),
-    // redis may not be connected in some test environments
     (redis && typeof redis.disconnect === 'function') ? redis.disconnect() : Promise.resolve(),
+    ...shutdownHooks.map((fn) => fn()),
   ]);
 
-  // Timeout fallback: force exit if cleanup hangs
   try {
     await Promise.race([
       cleanup,
-      new Promise((_, rej) => setTimeout(() => rej(new Error('shutdown timeout')), 10000)),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('shutdown timeout')), 10_000)),
     ]);
     logger.info('Shutdown: cleanup complete');
     process.exit(0);
@@ -129,6 +140,33 @@ export function buildSyncStateLedgerData(
   return { lastLedger };
 }
 
+/**
+ * Walks back from `divergedAt` up to MAX_REORG_DEPTH ledgers to find the
+ * deepest ledger still accessible on the network's canonical chain.
+ * Returns that ledger's sequence number as the safe revert point.
+ */
+export async function findReorgSafePoint(
+  divergedAt: number,
+  rpcServer: rpc.Server
+): Promise<number> {
+  for (let depth = 1; depth <= MAX_REORG_DEPTH; depth++) {
+    const candidate = divergedAt - depth;
+    if (candidate <= 0) return 0;
+    try {
+      const res = await rpcServer.getLedgers({
+        startLedger: candidate,
+        pagination: { limit: 1 },
+      });
+      if (res.ledgers && res.ledgers.length > 0) {
+        return candidate;
+      }
+    } catch {
+      // Ledger not accessible at this depth; keep walking back
+    }
+  }
+  return Math.max(0, divergedAt - MAX_REORG_DEPTH);
+}
+
 export async function validateHashContinuity(
   syncState: { lastLedger: number; lastLedgerHash: string | null },
   rpcServer: rpc.Server
@@ -143,9 +181,9 @@ export async function validateHashContinuity(
       if (ledgersRes.ledgers && ledgersRes.ledgers.length > 0) {
         const networkLedger = ledgersRes.ledgers[0];
         if (networkLedger.hash !== syncState.lastLedgerHash) {
-          logger.warn('Chain re-org detected', { ledger: syncState.lastLedger, dbHash: syncState.lastLedgerHash, networkHash: networkLedger.hash });
-          const toLedger = Math.max(0, syncState.lastLedger - 1);
-          await revertLedgers(toLedger);
+          console.warn(`Chain re-org detected at ledger ${syncState.lastLedger}! DB hash: ${syncState.lastLedgerHash}, Network hash: ${networkLedger.hash}`);
+          const safeLedger = await findReorgSafePoint(syncState.lastLedger, rpcServer);
+          await revertLedgers(safeLedger);
           return false;
         }
       }
@@ -157,12 +195,13 @@ export async function validateHashContinuity(
 }
 
 export async function startPolling() {
+  const config = loadConfig(); // Validates at startup; throws on invalid env values
   const contractIds = getContractIds();
   if (contractIds.length === 0) {
     throw new Error('At least one of MARKETPLACE_CONTRACT_ID or LAUNCHPAD_CONTRACT_ID must be set');
   }
 
-  logger.info('Indexer poller starting', { contractIds });
+  console.log(`Starting indexer poller for contract(s): ${contractIds.join(', ')} (pollIntervalMs=${config.pollIntervalMs}, maxLedgersPerCycle=${config.maxLedgersPerCycle})`);
 
   while (!shuttingDown) {
     try {
@@ -182,13 +221,10 @@ export async function startPolling() {
 
       // 3. Resolve start ledger, clamping to the safe RPC window on every poll
       let networkLatestLedger: number;
-      try {
-        const latestRes = await server.getLatestLedger();
-        networkLatestLedger = latestRes.sequence;
-      } catch (err) {
-        logger.error('Failed to fetch latest ledger', { err });
-        throw err;
-      }
+      networkLatestLedger = await withRetry(
+        () => server.getLatestLedger().then((r) => r.sequence),
+        { operation: 'getLatestLedger', maxAttempts: 5, baseDelayMs: 1_000 }
+      );
 
       networkLatestLedgerGauge.set(networkLatestLedger);
 
@@ -220,7 +256,9 @@ export async function startPolling() {
 
         syncState = resetState;
       }
-      const decodedEvents = await collectMarketplaceEvents(server, contractIds, startLedger, networkLatestLedger);
+      // Cap how many ledgers we process per cycle to bound catch-up batch size.
+      const batchEndLedger = Math.min(networkLatestLedger, startLedger + config.maxLedgersPerCycle - 1);
+      const decodedEvents = await collectMarketplaceEvents(server, contractIds, startLedger, batchEndLedger);
 
       let latestHash: string | null = null;
       if (decodedEvents.length > 0) {
@@ -251,22 +289,22 @@ export async function startPolling() {
         recordProgress();
 
         for (const ev of newEvents) emitSSEEvent(ev);
-      } else if (networkLatestLedger > syncState.lastLedger) {
+      } else if (batchEndLedger > syncState.lastLedger) {
         try {
           const ledgersRes = await server.getLedgers({
-            startLedger: networkLatestLedger,
+            startLedger: batchEndLedger,
             pagination: { limit: 1 },
           });
           if (ledgersRes.ledgers && ledgersRes.ledgers.length > 0) {
             latestHash = ledgersRes.ledgers[0].hash;
           }
         } catch (err) {
-          logger.error('Failed to fetch hash for latest network ledger', { ledger: networkLatestLedger, err });
+          console.error(`Failed to fetch hash for ledger ${batchEndLedger}:`, err);
         }
 
         const updatedState = await prisma.syncState.update({
           where: { id: 1 },
-          data: buildSyncStateLedgerData(networkLatestLedger, latestHash),
+          data: buildSyncStateLedgerData(batchEndLedger, latestHash),
         });
 
         updateSyncMetrics(updatedState.lastLedger, networkLatestLedger);
@@ -293,13 +331,12 @@ export async function startPolling() {
     }
 
     consecutiveErrors = 0;
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+    await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
   }
 
-    // If the loop exited due to shutdown signal, ensure resources are cleaned
-    if (shuttingDown) {
-      await gracefulShutdown();
-    }
+  if (shuttingDown) {
+    await gracefulShutdown();
+  }
 }
 
 async function fetchListingFromChain(_listingId: bigint): Promise<any | null> {

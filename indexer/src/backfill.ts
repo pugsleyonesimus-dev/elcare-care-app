@@ -7,6 +7,8 @@ import { collectMarketplaceEvents } from './event-sync.js';
 
 dotenv.config();
 
+const BACKFILL_BATCH_SIZE = parseInt(process.env.BACKFILL_BATCH_SIZE || '5000');
+
 type BackfillArgs = {
   rpcUrl: string;
   startLedger: number;
@@ -32,7 +34,7 @@ function parseLedger(value: string | undefined, label: string): number {
 
   const ledger = Number(value);
   if (!Number.isInteger(ledger) || ledger < 0) {
-    throw new Error(`Invalid --${label} value: ${value}`);
+    throw new Error(`Invalid --${label} value "${value}": must be a non-negative integer`);
   }
 
   return ledger;
@@ -45,11 +47,14 @@ function parseArgs(): BackfillArgs {
     throw new Error('Missing archival RPC URL. Set ARCHIVAL_STELLAR_RPC_URL or pass --rpc=<url>.');
   }
 
-  return {
-    rpcUrl,
-    startLedger: parseLedger(readFlag('start'), 'start'),
-    endLedger: endLedgerFlag ? parseLedger(endLedgerFlag, 'end') : undefined,
-  };
+  const startLedger = parseLedger(readFlag('start'), 'start');
+  const endLedger = endLedgerFlag ? parseLedger(endLedgerFlag, 'end') : undefined;
+
+  if (endLedger !== undefined && startLedger > endLedger) {
+    throw new Error(`Invalid range: --start=${startLedger} must be ≤ --end=${endLedger}`);
+  }
+
+  return { rpcUrl, startLedger, endLedger };
 }
 
 async function fetchLedgerHash(server: rpc.Server, ledger: number): Promise<string | null> {
@@ -66,49 +71,95 @@ async function fetchLedgerHash(server: rpc.Server, ledger: number): Promise<stri
   }
 }
 
-export async function runBackfill() {
-  const { rpcUrl, startLedger, endLedger } = parseArgs();
+export async function runBackfill(overrides?: Partial<BackfillArgs & { rpcServer?: rpc.Server }>) {
+  const parsed = parseArgs();
+  const rpcUrl = overrides?.rpcUrl ?? parsed.rpcUrl;
+  const startLedger = overrides?.startLedger ?? parsed.startLedger;
+  const endLedgerOverride = overrides?.endLedger ?? parsed.endLedger;
+
   const contractIds = getContractIds();
 
   if (contractIds.length === 0) {
     throw new Error('At least one of MARKETPLACE_CONTRACT_ID or LAUNCHPAD_CONTRACT_ID must be set');
   }
 
-  const server = new rpc.Server(rpcUrl);
-  const networkLatestLedger = endLedger ?? (await server.getLatestLedger()).sequence;
+  const server = overrides?.rpcServer ?? new rpc.Server(rpcUrl);
 
-  const decodedEvents = await collectMarketplaceEvents(
-    server,
-    contractIds,
+  // Fetch chain tip to validate the requested range.
+  const chainTip = (await server.getLatestLedger()).sequence;
+  const endLedger = endLedgerOverride ?? chainTip;
+
+  if (endLedger > chainTip) {
+    throw new Error(
+      `Invalid range: --end=${endLedger} exceeds the current chain tip (${chainTip})`
+    );
+  }
+
+  if (startLedger > endLedger) {
+    throw new Error(`Invalid range: --start=${startLedger} must be ≤ --end=${endLedger}`);
+  }
+
+  const totalLedgers = endLedger - startLedger + 1;
+  console.log({
+    msg: 'Backfill starting',
     startLedger,
-    networkLatestLedger
-  );
+    endLedger,
+    totalLedgers,
+    batchSize: BACKFILL_BATCH_SIZE,
+  });
 
-  const processedLedger = decodedEvents.length > 0
-    ? Math.max(...decodedEvents.map((event) => event.ledgerSequence))
-    : networkLatestLedger;
+  let totalInserted = 0;
+  let processedLedger = startLedger - 1;
 
-  const latestHash = await fetchLedgerHash(server, processedLedger);
+  for (let batchStart = startLedger; batchStart <= endLedger; batchStart += BACKFILL_BATCH_SIZE) {
+    const batchEnd = Math.min(batchStart + BACKFILL_BATCH_SIZE - 1, endLedger);
 
-  const { insertedCount } = await prisma.$transaction(async (tx) => {
-    const inserted = await applyDecodedEvents(decodedEvents, tx);
-    const ledgerData = buildSyncStateLedgerData(processedLedger, latestHash);
-    await tx.syncState.upsert({
-      where: { id: 1 },
-      create: { id: 1, ...ledgerData },
-      update: ledgerData,
+    const decodedEvents = await collectMarketplaceEvents(
+      server,
+      contractIds,
+      batchStart,
+      batchEnd
+    );
+
+    const batchMaxLedger = decodedEvents.length > 0
+      ? Math.max(...decodedEvents.map((e) => e.ledgerSequence))
+      : batchEnd;
+
+    const latestHash = await fetchLedgerHash(server, batchMaxLedger);
+
+    const { insertedCount } = await prisma.$transaction(async (tx) => {
+      const inserted = await applyDecodedEvents(decodedEvents, tx);
+      const ledgerData = buildSyncStateLedgerData(batchMaxLedger, latestHash);
+      await tx.syncState.upsert({
+        where: { id: 1 },
+        create: { id: 1, ...ledgerData },
+        update: ledgerData,
+      });
+      return { insertedCount: inserted.length };
     });
 
-    return { insertedCount: inserted.length };
-  });
+    totalInserted += insertedCount;
+    processedLedger = batchMaxLedger;
+
+    const progressPct = (((batchEnd - startLedger + 1) / totalLedgers) * 100).toFixed(1);
+    console.log({
+      msg: `Backfill progress: ${progressPct}%`,
+      batchStart,
+      batchEnd,
+      batchInserted: insertedCount,
+      processedLedger,
+    });
+  }
 
   console.log({
     msg: 'Backfill complete',
     startLedger,
-    endLedger: networkLatestLedger,
-    insertedCount,
+    endLedger,
+    totalInserted,
     processedLedger,
   });
+
+  return { startLedger, endLedger, totalInserted, processedLedger };
 }
 
 if (process.argv[1] && process.argv[1].includes('backfill')) {

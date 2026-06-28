@@ -33,6 +33,9 @@ pub enum DataKey {
     AuctionExtensionTrigger,
     /// Bounded bid history for a specific auction (capped to BID_HISTORY_CAP entries).
     AuctionBids(u64),
+    MinPrice,
+    MaxPrice,
+    MigrationDone(soroban_sdk::String),
 }
 
 pub const LEDGER_TTL_BUMP: u32 = 432_000;

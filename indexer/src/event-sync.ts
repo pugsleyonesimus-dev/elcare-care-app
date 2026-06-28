@@ -1,5 +1,7 @@
 import { rpc } from '@stellar/stellar-sdk';
 import { parseMarketplaceEvent, type DecodedEvent } from './parser.js';
+import { decodeErrorsCounter } from './metrics.js';
+import { withRetry } from './retry.js';
 
 export const MAX_LEDGER_WINDOW = 17_000;
 export const EVENT_PAGE_LIMIT = 100;
@@ -45,22 +47,30 @@ export async function collectMarketplaceEvents(
     let paginationToken: string | null = null;
 
     do {
-      const response: any = await server.getEvents({
-        startLedger: windowStart,
-        endLedger: windowEnd,
-        filters: [
-          {
-            type: 'contract',
-            contractIds,
-          },
-        ],
-        limit: EVENT_PAGE_LIMIT,
-        ...(paginationToken ? { cursor: paginationToken } : {}),
-      } as any);
+      const response: any = await withRetry(
+        () => server.getEvents({
+          startLedger: windowStart,
+          endLedger: windowEnd,
+          filters: [{ type: 'contract', contractIds }],
+          limit: EVENT_PAGE_LIMIT,
+          ...(paginationToken ? { cursor: paginationToken } : {}),
+        } as any),
+        { operation: 'getEvents', maxAttempts: 5, baseDelayMs: 500 }
+      );
 
-      for (const event of response.events ?? []) {
-        const decoded = decodeRpcEvent(event);
-        if (decoded) decodedEvents.push(decoded);
+      for (const [idx, event] of (response.events ?? []).entries()) {
+        try {
+          const decoded = decodeRpcEvent(event);
+          if (decoded) decodedEvents.push(decoded);
+        } catch (err) {
+          decodeErrorsCounter.inc();
+          console.error({
+            msg: '[EventSync] Failed to decode event — skipping',
+            ledger: (event as RpcEvent).ledger,
+            eventIndex: idx,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
 
       paginationToken = response.paginationToken ?? null;

@@ -2,12 +2,12 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
-import routes from './api/routes.js';
-import { startPolling } from './poller.js';
-import { isStalled } from './stall.js';
-import { logger } from './logger.js';
+import routes, { closeSSEClients } from './api/routes.js';
+import { startPolling, registerShutdownHook } from './poller.js';
 import { rateLimiter } from './api/rate-limit-middleware.js';
 import { metricsMiddleware, handleMetrics } from './metrics.js';
+import { errorHandler } from './api/errors.js';
+import { startReconciler } from './reconciler.js';
 import prisma from './db.js';
 
 dotenv.config();
@@ -50,6 +50,9 @@ app.use(rateLimiter);
 // API Routes
 app.use('/', routes);
 
+// Central error handler — must be registered after all routes
+app.use(errorHandler);
+
 // Health check
 app.get('/health', (req: express.Request, res: express.Response) => {
     res.json({ status: 'ok' });
@@ -70,12 +73,23 @@ app.get('/readyz', async (req: express.Request, res: express.Response) => {
 });
 
 // Start the server
-app.listen(PORT, () => {
-    logger.info('Indexer API listening', { port: PORT });
-    
+const httpServer = app.listen(PORT, () => {
+    console.log(`Indexer API listening on http://localhost:${PORT}`);
+
     // Start the background polling loop
     startPolling().catch((err) => {
         logger.error('Fatal error in poller', { err });
         process.exit(1);
     });
+
+    // Start the periodic reconciliation job (non-fatal if it fails)
+    startReconciler().catch((err) => {
+        console.error('[Reconciler] Failed to start:', err);
+    });
 });
+
+// Register HTTP server and SSE cleanup so gracefulShutdown() in poller closes them too.
+registerShutdownHook(() => new Promise<void>((resolve) => {
+    closeSSEClients();
+    httpServer.close(() => resolve());
+}));

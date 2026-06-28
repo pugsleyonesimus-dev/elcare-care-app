@@ -21,9 +21,15 @@ export const syncLatencyGauge = new client.Gauge({
   help: 'The difference between the latest network ledger and the processed ledger',
 });
 
-export const stalledGauge = new client.Gauge({
-  name: 'indexer_stalled',
-  help: '1 when the indexer has made no ledger progress for longer than STALL_THRESHOLD_MS, 0 otherwise',
+export const rpcRetryExhaustedCounter = new client.Counter({
+  name: 'indexer_rpc_retry_exhausted_total',
+  help: 'Total number of times RPC retries were exhausted, indicating sustained failures',
+  labelNames: ['operation'],
+});
+
+export const decodeErrorsCounter = new client.Counter({
+  name: 'indexer_decode_errors_total',
+  help: 'Total number of XDR event decode errors encountered during sync',
 });
 
 export const httpRequestDurationMicroseconds = new client.Histogram({
