@@ -55,16 +55,33 @@ app.get('/health', (req: express.Request, res: express.Response) => {
     res.json({ status: 'ok' });
 });
 
-// Readiness probe — returns 503 until the indexer has processed at least one ledger.
-// Use this for Kubernetes readinessProbe / Docker HEALTHCHECK so traffic is only
-// routed once the indexer is actually synced and serving real data.
+// Readiness probe — returns 503 until DB is reachable and at least one ledger is indexed.
 app.get('/readyz', async (req: express.Request, res: express.Response) => {
-    const state = await prisma.syncState.findUnique({ where: { id: 1 } });
-    if (state && state.lastLedger > 0) {
-        res.json({ status: 'ready', lastLedger: state.lastLedger });
-    } else {
-        res.status(503).json({ status: 'not_ready', reason: 'No ledgers indexed yet' });
+    const reasons: string[] = [];
+
+    // Check DB connectivity
+    try {
+        await prisma.syncState.findUnique({ where: { id: 1 } });
+    } catch (err) {
+        reasons.push('Database unreachable');
     }
+
+    // Check first ledger indexed
+    try {
+        const state = await prisma.syncState.findUnique({ where: { id: 1 } });
+        if (!state || state.lastLedger === 0) {
+            reasons.push('No ledgers indexed yet');
+        }
+    } catch (err) {
+        reasons.push('Failed to check sync state');
+    }
+
+    if (reasons.length > 0) {
+        return res.status(503).json({ status: 'not_ready', reasons });
+    }
+
+    const state = await prisma.syncState.findUnique({ where: { id: 1 } });
+    res.json({ status: 'ready', lastLedger: state?.lastLedger });
 });
 
 // Start the server
