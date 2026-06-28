@@ -2,8 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
-import routes from './api/routes.js';
-import { startPolling } from './poller.js';
+import routes, { closeSSEClients } from './api/routes.js';
+import { startPolling, registerShutdownHook } from './poller.js';
 import { rateLimiter } from './api/rate-limit-middleware.js';
 import { metricsMiddleware, handleMetrics } from './metrics.js';
 import { errorHandler } from './api/errors.js';
@@ -71,9 +71,9 @@ app.get('/readyz', async (req: express.Request, res: express.Response) => {
 });
 
 // Start the server
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
     console.log(`Indexer API listening on http://localhost:${PORT}`);
-    
+
     // Start the background polling loop
     startPolling().catch((err) => {
         console.error('Fatal error in poller:', err);
@@ -85,3 +85,9 @@ app.listen(PORT, () => {
         console.error('[Reconciler] Failed to start:', err);
     });
 });
+
+// Register HTTP server and SSE cleanup so gracefulShutdown() in poller closes them too.
+registerShutdownHook(() => new Promise<void>((resolve) => {
+    closeSSEClients();
+    httpServer.close(() => resolve());
+}));

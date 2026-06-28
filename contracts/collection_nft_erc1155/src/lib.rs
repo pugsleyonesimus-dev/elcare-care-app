@@ -8,8 +8,7 @@
 #![allow(clippy::too_many_arguments, deprecated)]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
-    Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
 };
 
 const TTL_THRESHOLD: u32 = 50_000;
@@ -27,6 +26,10 @@ pub enum Error {
     InsufficientBalance = 4,
     LengthMismatch = 5,
     NotCreator = 6,
+    /// Mint would exceed the per-token max supply (#40).
+    MaxSupplyReached = 7,
+    /// Mint would exceed the per-wallet cap (#40).
+    WalletLimitReached = 8,
 }
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
@@ -41,11 +44,17 @@ pub enum DataKey {
     NextTokenId,
     RoyaltyBps,
     RoyaltyReceiver,
+    /// Optional global per-wallet mint cap (#40). Stored in instance storage.
+    PerWalletLimit,
     // Persistent storage
     Balance(Address, u64),            // (account, token_id) → u128
     ApprovedForAll(Address, Address), // (owner, operator) → bool
     TokenUri(u64),
     TotalSupply(u64), // per token_id
+    /// Per-token maximum supply cap (#40). 0 means no cap.
+    MaxTokenSupply(u64),
+    /// Cumulative amount minted per wallet per token_id (#40).
+    WalletMinted(Address, u64),
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -81,10 +90,70 @@ impl NormalNFT1155 {
         Ok(())
     }
 
+    // ── Supply cap and per-wallet limit management (#40) ─────────────────
+
+    /// Set the maximum mintable supply for a specific token_id.
+    /// Must be called before minting that token type. Pass 0 to remove cap.
+    pub fn set_token_max_supply(env: Env, token_id: u64, max_supply: u128) -> Result<(), Error> {
+        Self::extend_instance_ttl(&env);
+        Self::only_creator(&env)?;
+        if max_supply == 0 {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::MaxTokenSupply(token_id));
+        } else {
+            env.storage()
+                .persistent()
+                .set(&DataKey::MaxTokenSupply(token_id), &max_supply);
+            env.storage().persistent().extend_ttl(
+                &DataKey::MaxTokenSupply(token_id),
+                TTL_THRESHOLD,
+                TTL_BUMP,
+            );
+        }
+        Ok(())
+    }
+
+    /// Set or clear the global per-wallet mint limit (0 = no limit).
+    pub fn set_per_wallet_limit(env: Env, limit: u128) -> Result<(), Error> {
+        Self::extend_instance_ttl(&env);
+        Self::only_creator(&env)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::PerWalletLimit, &limit);
+        Ok(())
+    }
+
+    /// Read the configured per-wallet limit (0 = no limit).
+    pub fn per_wallet_limit(env: Env) -> u128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PerWalletLimit)
+            .unwrap_or(0)
+    }
+
+    /// Read the configured per-token max supply (0 = no cap).
+    pub fn token_max_supply(env: Env, token_id: u64) -> u128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MaxTokenSupply(token_id))
+            .unwrap_or(0)
+    }
+
+    /// Read cumulative amount minted by `wallet` for `token_id`.
+    pub fn wallet_minted(env: Env, wallet: Address, token_id: u64) -> u128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::WalletMinted(wallet, token_id))
+            .unwrap_or(0)
+    }
+
     // ── Minting ───────────────────────────────────────────────────────────
 
     /// Create a brand new token type, auto-assign the next ID.
     /// Returns the new token_id.
+    ///
+    /// Enforces per-wallet limit if set (#40).
     pub fn mint_new(env: Env, to: Address, amount: u128, uri: String) -> Result<u64, Error> {
         Self::extend_instance_ttl(&env);
         Self::only_creator(&env)?;
@@ -93,7 +162,9 @@ impl NormalNFT1155 {
             .instance()
             .get(&DataKey::NextTokenId)
             .unwrap_or(0);
+        Self::_check_wallet_limit(&env, &to, token_id, amount)?;
         Self::_mint(&env, &to, token_id, amount, &uri);
+        Self::_update_wallet_minted(&env, &to, token_id, amount);
         env.storage()
             .instance()
             .set(&DataKey::NextTokenId, &(token_id + 1));
@@ -101,6 +172,8 @@ impl NormalNFT1155 {
     }
 
     /// Mint additional supply of an existing token type (explicit token_id).
+    ///
+    /// Enforces supply cap and per-wallet limit if set (#40).
     pub fn mint(
         env: Env,
         to: Address,
@@ -110,12 +183,17 @@ impl NormalNFT1155 {
     ) -> Result<(), Error> {
         Self::extend_instance_ttl(&env);
         Self::only_creator(&env)?;
+        Self::_check_supply_cap(&env, token_id, amount)?;
+        Self::_check_wallet_limit(&env, &to, token_id, amount)?;
         Self::_mint(&env, &to, token_id, amount, &uri);
+        Self::_update_wallet_minted(&env, &to, token_id, amount);
         Ok(())
     }
 
     /// Batch-mint multiple token types in one call.
     /// Optimized to minimize storage I/O.
+    ///
+    /// Enforces supply cap and per-wallet limit per token_id (#40).
     pub fn mint_batch(
         env: Env,
         to: Address,
@@ -133,6 +211,14 @@ impl NormalNFT1155 {
 
         if token_ids.len() != amounts.len() || token_ids.len() != uris.len() {
             return Err(Error::LengthMismatch);
+        }
+
+        // Pre-flight cap checks before writing any state (#40)
+        for i in 0..len {
+            let tid = token_ids.get(i).unwrap();
+            let amt = amounts.get(i).unwrap();
+            Self::_check_supply_cap(&env, tid, amt)?;
+            Self::_check_wallet_limit(&env, &to, tid, amt)?;
         }
 
         // Read NextTokenId once
@@ -184,9 +270,19 @@ impl NormalNFT1155 {
                 .persistent()
                 .extend_ttl(&supply_key, TTL_THRESHOLD, TTL_BUMP);
 
+            // Update wallet minted counter (#40)
+            let wm_key = DataKey::WalletMinted(to.clone(), token_id);
+            let prev_minted: u128 = env.storage().persistent().get(&wm_key).unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&wm_key, &(prev_minted + amount));
+            env.storage()
+                .persistent()
+                .extend_ttl(&wm_key, TTL_THRESHOLD, TTL_BUMP);
+
             // Emit TransferSingle event (ERC-1155 standard)
             env.events().publish(
-                (Symbol::new(&env, "TransferSingle"), to.clone(), to.clone()),
+                (symbol_short!("mint"), creator, to.clone()),
                 (token_id, amount),
             );
         }
@@ -252,17 +348,6 @@ impl NormalNFT1155 {
         if token_ids.len() != amounts.len() {
             return Err(Error::LengthMismatch);
         }
-
-        // Emit TransferBatch event (ERC-1155 standard)
-        env.events().publish(
-            (
-                Symbol::new(&env, "TransferBatch"),
-                spender.clone(),
-                from.clone(),
-                to.clone(),
-            ),
-            (token_ids.clone(), amounts.clone()),
-        );
 
         for i in 0..token_ids.len() {
             let id = token_ids.get(i).unwrap();
@@ -334,13 +419,8 @@ impl NormalNFT1155 {
             TTL_BUMP,
         );
 
-        // Emit TransferSingle event for burn (to zero address)
         env.events().publish(
-            (
-                Symbol::new(&env, "TransferSingle"),
-                from.clone(),
-                from.clone(),
-            ),
+            (symbol_short!("burn"), from.clone()),
             (token_id, amount),
         );
         Ok(())
@@ -497,9 +577,9 @@ impl NormalNFT1155 {
             TTL_BUMP,
         );
 
-        // Emit TransferSingle event for mint (from zero address)
+        let creator: Address = env.storage().instance().get(&DataKey::Creator).unwrap();
         env.events().publish(
-            (Symbol::new(env, "TransferSingle"), to.clone(), to.clone()),
+            (symbol_short!("mint"), creator, to.clone()),
             (token_id, amount),
         );
     }
@@ -545,14 +625,8 @@ impl NormalNFT1155 {
             100_000,
         );
 
-        // Emit TransferSingle event with operator (ERC-1155 standard)
         env.events().publish(
-            (
-                Symbol::new(env, "TransferSingle"),
-                operator.clone(),
-                from.clone(),
-                to.clone(),
-            ),
+            (symbol_short!("transfer"), from.clone(), to.clone()),
             (token_id, amount),
         );
         Ok(())
@@ -598,9 +672,8 @@ impl NormalNFT1155 {
             100_000,
         );
 
-        // Emit TransferSingle event (ERC-1155 standard) - operator is from for direct transfers
         env.events().publish(
-            (Symbol::new(env, "TransferSingle"), from.clone(), to.clone()),
+            (symbol_short!("transfer"), from.clone(), to.clone()),
             (token_id, amount),
         );
         Ok(())
@@ -611,6 +684,61 @@ impl NormalNFT1155 {
             .persistent()
             .get(&DataKey::ApprovedForAll(owner.clone(), operator.clone()))
             .unwrap_or(false)
+    }
+
+    // ── Supply cap / wallet limit helpers (#40) ───────────────────────────
+
+    fn _check_supply_cap(env: &Env, token_id: u64, amount: u128) -> Result<(), Error> {
+        if let Some(max_supply) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u128>(&DataKey::MaxTokenSupply(token_id))
+        {
+            if max_supply > 0 {
+                let current: u128 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::TotalSupply(token_id))
+                    .unwrap_or(0);
+                if current + amount > max_supply {
+                    return Err(Error::MaxSupplyReached);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn _check_wallet_limit(
+        env: &Env,
+        wallet: &Address,
+        token_id: u64,
+        amount: u128,
+    ) -> Result<(), Error> {
+        let limit: u128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PerWalletLimit)
+            .unwrap_or(0);
+        if limit > 0 {
+            let already: u128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::WalletMinted(wallet.clone(), token_id))
+                .unwrap_or(0);
+            if already + amount > limit {
+                return Err(Error::WalletLimitReached);
+            }
+        }
+        Ok(())
+    }
+
+    fn _update_wallet_minted(env: &Env, wallet: &Address, token_id: u64, amount: u128) {
+        let key = DataKey::WalletMinted(wallet.clone(), token_id);
+        let prev: u128 = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &(prev + amount));
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
     }
 }
 

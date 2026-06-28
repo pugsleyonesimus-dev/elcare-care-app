@@ -58,4 +58,36 @@ describe('Prometheus Metrics API & Middleware', () => {
     expect(res.text).toContain('indexer_network_latest_ledger 654');
     expect(res.text).toContain('indexer_sync_latency_ledgers 333');
   });
+
+  it('reflects updated gauge values after each simulated poll cycle', async () => {
+    // Cycle 1: far behind
+    latestLedgerProcessedGauge.set(1000);
+    networkLatestLedgerGauge.set(5000);
+    syncLatencyGauge.set(4000); // 5000 - 1000
+
+    let res = await request(app).get('/metrics').expect(200);
+    expect(res.text).toContain('indexer_latest_ledger_processed 1000');
+    expect(res.text).toContain('indexer_network_latest_ledger 5000');
+    expect(res.text).toContain('indexer_sync_latency_ledgers 4000');
+
+    // Cycle 2: caught up partially
+    latestLedgerProcessedGauge.set(3000);
+    networkLatestLedgerGauge.set(5100);
+    syncLatencyGauge.set(2100); // 5100 - 3000
+
+    res = await request(app).get('/metrics').expect(200);
+    expect(res.text).toContain('indexer_latest_ledger_processed 3000');
+    expect(res.text).toContain('indexer_network_latest_ledger 5100');
+    expect(res.text).toContain('indexer_sync_latency_ledgers 2100');
+
+    // Cycle 3: fully synced
+    latestLedgerProcessedGauge.set(5200);
+    networkLatestLedgerGauge.set(5200);
+    syncLatencyGauge.set(0);
+
+    res = await request(app).get('/metrics').expect(200);
+    expect(res.text).toContain('indexer_latest_ledger_processed 5200');
+    expect(res.text).toContain('indexer_network_latest_ledger 5200');
+    expect(res.text).toContain('indexer_sync_latency_ledgers 0');
+  });
 });

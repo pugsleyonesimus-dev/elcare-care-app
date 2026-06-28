@@ -40,6 +40,9 @@ export function _resetSseState() {
   sseClients.clear();
 }
 
+// SSE clients registry
+const sseClients: Response[] = [];
+
 export function emitSSEEvent(event: any) {
   const id = nextSseId();
   const dataStr = JSON.stringify(event, (_k, v) => typeof v === 'bigint' ? v.toString() : v);
@@ -57,6 +60,13 @@ export function emitSSEEvent(event: any) {
       sseClients.delete(client);
     }
   }
+}
+
+export function closeSSEClients(): void {
+    for (const client of sseClients) {
+        try { client.end(); } catch { /* ignore */ }
+    }
+    sseClients.length = 0;
 }
 
 const router = Router();

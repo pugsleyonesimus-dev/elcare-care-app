@@ -495,7 +495,7 @@ impl MarketplaceContract {
         Self::validate_recipients(&env, &recipients, protocol_fee_bps);
 
         if !Self::is_token_whitelisted(&env, &token) {
-            panic_with_error!(&env, MarketplaceError::Unauthorized);
+            panic_with_error!(&env, MarketplaceError::TokenNotWhitelisted);
         }
 
         let listing_id = increment_listing_count(&env);
@@ -926,7 +926,7 @@ impl MarketplaceContract {
             panic_with_error!(&env, MarketplaceError::InvalidAuctionDuration);
         }
         if !Self::is_token_whitelisted(&env, &token) {
-            panic_with_error!(&env, MarketplaceError::Unauthorized);
+            panic_with_error!(&env, MarketplaceError::TokenNotWhitelisted);
         }
         let auction_id = increment_auction_count(&env);
         let end_time = env.ledger().timestamp() + duration;
@@ -1262,6 +1262,7 @@ impl MarketplaceContract {
         listing_id: u64,
         amount: i128,
         token: Address,
+        expires_at: Option<u64>,
     ) -> u64 {
         Self::require_not_paused(&env);
         offerer.require_auth();
@@ -1276,6 +1277,11 @@ impl MarketplaceContract {
         if amount <= 0 {
             panic_with_error!(&env, MarketplaceError::InsufficientOfferAmount);
         }
+        // Reject at creation time if the offer token is not whitelisted,
+        // giving the offerer immediate feedback instead of a failed purchase later.
+        if !Self::is_token_whitelisted(&env, &token) {
+            panic_with_error!(&env, MarketplaceError::TokenNotWhitelisted);
+        }
         TokenClient::new(&env, &token).transfer(&offerer, &env.current_contract_address(), &amount);
         let offer_id = increment_offer_count(&env);
         save_offer(
@@ -1288,6 +1294,7 @@ impl MarketplaceContract {
                 token: token.clone(),
                 status: OfferStatus::Pending,
                 created_at: env.ledger().sequence(),
+                expires_at, // #32: optional expiry stored with offer
             },
         );
         let mut lo = load_listing_offers(&env, listing_id);
@@ -1309,6 +1316,7 @@ impl MarketplaceContract {
         offer_id
     }
 
+    // #30: Require offerer auth; revert with InvalidOfferState on terminal offers.
     pub fn withdraw_offer(env: Env, offerer: Address, offer_id: u64) {
         Self::require_not_paused(&env);
         offerer.require_auth();
@@ -1318,8 +1326,9 @@ impl MarketplaceContract {
             panic_with_error!(&env, MarketplaceError::Unauthorized);
         }
         if offer.status != OfferStatus::Pending {
-            panic_with_error!(&env, MarketplaceError::OfferNotPending);
+            panic_with_error!(&env, MarketplaceError::InvalidOfferState);
         }
+        // #29: Refund escrow on withdraw.
         TokenClient::new(&env, &offer.token).transfer(
             &env.current_contract_address(),
             &offerer,
@@ -1336,6 +1345,7 @@ impl MarketplaceContract {
         .publish(&env);
     }
 
+    // #30: Require seller (artist) auth; revert with InvalidOfferState on terminal offers.
     pub fn reject_offer(env: Env, artist: Address, offer_id: u64) {
         Self::require_not_paused(&env);
         artist.require_auth();
@@ -1347,8 +1357,9 @@ impl MarketplaceContract {
             panic_with_error!(&env, MarketplaceError::Unauthorized);
         }
         if offer.status != OfferStatus::Pending {
-            panic_with_error!(&env, MarketplaceError::OfferNotPending);
+            panic_with_error!(&env, MarketplaceError::InvalidOfferState);
         }
+        // #29: Refund escrow on reject.
         TokenClient::new(&env, &offer.token).transfer(
             &env.current_contract_address(),
             &offer.offerer,
@@ -1365,6 +1376,9 @@ impl MarketplaceContract {
         .publish(&env);
     }
 
+    // #30: Require seller (artist) auth; revert with InvalidOfferState on terminal offers.
+    // #32: Revert with OfferExpired if the offer has passed its expires_at.
+    // #31: Refund and emit OfferRejectedEvent for each competing pending offer.
     pub fn accept_offer(env: Env, artist: Address, offer_id: u64) {
         Self::require_not_paused(&env);
         artist.require_auth();
@@ -1388,12 +1402,21 @@ impl MarketplaceContract {
             release_listing_lock(&env, listing_id);
             panic_with_error!(&env, MarketplaceError::Unauthorized);
         }
+        // #30: InvalidOfferState for any non-Pending offer.
         if offer.status != OfferStatus::Pending || listing.status != ListingStatus::Active {
             release_listing_lock(&env, listing_id);
-            panic_with_error!(&env, MarketplaceError::OfferNotPending);
+            panic_with_error!(&env, MarketplaceError::InvalidOfferState);
         }
 
-        // Reject offer acceptance if the listing has an expiry that has passed.
+        // #32: Reject acceptance if offer has expired.
+        if let Some(exp) = offer.expires_at {
+            if env.ledger().timestamp() >= exp {
+                release_listing_lock(&env, listing_id);
+                panic_with_error!(&env, MarketplaceError::OfferExpired);
+            }
+        }
+
+        // Reject acceptance if listing has expired.
         if let Some(exp) = listing.expires_at {
             if env.ledger().timestamp() >= exp {
                 release_listing_lock(&env, listing_id);
@@ -1402,8 +1425,6 @@ impl MarketplaceContract {
         }
 
         // ── CHECKS-EFFECTS-INTERACTIONS ──────────────────────────────────────
-        // Persist all state mutations before any cross-contract call so that a
-        // reentrant attempt on the same listing sees it already Sold.
         let accepted_offerer = offer.offerer.clone();
         let accepted_amount = offer.amount;
         let accepted_listing_id = offer.listing_id;
@@ -1414,7 +1435,8 @@ impl MarketplaceContract {
         save_listing(&env, &listing);
         remove_from_active_listings(&env, accepted_listing_id);
 
-        // Mark all other pending offers as rejected (state change only).
+        // #31: Mark all other pending offers Rejected; collect refund data and
+        // emit OfferRejectedEvent for each.
         let sibling_offers = load_listing_offers(&env, listing.listing_id);
         let mut refund_offerers: Vec<Address> = Vec::new(&env);
         let mut refund_amounts: Vec<i128> = Vec::new(&env);
@@ -1428,6 +1450,12 @@ impl MarketplaceContract {
                         refund_offerers.push_back(other.offerer.clone());
                         refund_amounts.push_back(other.amount);
                         refund_tokens.push_back(other.token.clone());
+                        OfferRejectedEvent {
+                            offer_id: oid,
+                            listing_id: accepted_listing_id,
+                            offerer: other.offerer.clone(),
+                        }
+                        .publish(&env);
                     }
                 }
             }
@@ -1442,8 +1470,6 @@ impl MarketplaceContract {
         .publish(&env);
 
         // ── INTERACTIONS ─────────────────────────────────────────────────────
-        // Use the listing's snapshotted protocol fee so settlement matches what
-        // was agreed at listing creation time.
         let fee_collected = Self::distribute_payout(
             &env,
             &offer.token,
@@ -1453,10 +1479,9 @@ impl MarketplaceContract {
             &listing.recipients,
             &offer.offerer,
             false,
-            listing.protocol_fee_bps, // Use snapshotted fee
+            listing.protocol_fee_bps,
         );
 
-        // Emit ProtocolFeeCollected so treasury revenue is observable on-chain.
         if fee_collected > 0 {
             if let Some(treasury) = crate::storage::get_treasury_storage(&env) {
                 ProtocolFeeCollectedEvent {
@@ -1482,7 +1507,7 @@ impl MarketplaceContract {
             ],
         );
 
-        // Refund rejected offer escrows
+        // #29: Refund escrowed amounts for rejected competing offers.
         for i in 0..refund_offerers.len() {
             TokenClient::new(&env, &refund_tokens.get(i).unwrap()).transfer(
                 &env.current_contract_address(),
@@ -1492,6 +1517,39 @@ impl MarketplaceContract {
         }
 
         release_listing_lock(&env, listing_id);
+    }
+
+    /// #32: Permissionless reclaim of escrowed funds from an expired offer.
+    /// Anyone may call after `offer.expires_at` has passed. Offer must be Pending.
+    pub fn reclaim_offer(env: Env, offer_id: u64) {
+        Self::require_not_paused(&env);
+        let mut offer = load_offer(&env, offer_id)
+            .unwrap_or_else(|| panic_with_error!(&env, MarketplaceError::OfferNotFound));
+        if offer.status != OfferStatus::Pending {
+            panic_with_error!(&env, MarketplaceError::InvalidOfferState);
+        }
+        let exp = match offer.expires_at {
+            Some(e) => e,
+            None => panic_with_error!(&env, MarketplaceError::InvalidOfferState),
+        };
+        if env.ledger().timestamp() < exp {
+            panic_with_error!(&env, MarketplaceError::OfferExpired);
+        }
+        TokenClient::new(&env, &offer.token).transfer(
+            &env.current_contract_address(),
+            &offer.offerer,
+            &offer.amount,
+        );
+        offer.status = OfferStatus::Withdrawn;
+        save_offer(&env, &offer);
+
+        OfferReclaimedEvent {
+            offer_id,
+            listing_id: offer.listing_id,
+            offerer: offer.offerer.clone(),
+            amount: offer.amount,
+        }
+        .publish(&env);
     }
 
     pub fn get_listing(env: Env, listing_id: u64) -> Listing {
@@ -1526,6 +1584,60 @@ impl MarketplaceContract {
 
     pub fn get_active_listings_page(env: Env, start: u32, limit: u32) -> Vec<u64> {
         Self::get_active_listings(env, limit, start)
+    }
+
+    /// Maximum `limit` accepted by `get_listings_paginated`.
+    pub const MAX_PAGE_LIMIT: u32 = 100;
+
+    /// Paginated view over active listings.
+    ///
+    /// Returns up to `limit` resolved [`Listing`] structs starting at cursor
+    /// `start` (a zero-based index into the active-listings index).  `limit`
+    /// is clamped to [`MAX_PAGE_LIMIT`] so clients cannot request oversized
+    /// responses.
+    ///
+    /// # Return value
+    /// `(listings, next_cursor)` where:
+    /// - `listings` contains the resolved `Listing` structs for the page.
+    /// - `next_cursor` is the index to pass as `start` to fetch the next
+    ///   page.  When the returned page is the last one (i.e. there are no
+    ///   further entries), `next_cursor` equals the total number of active
+    ///   listing IDs, which is ≥ the current active-listing count and can be
+    ///   used as a sentinel by callers (`listings.len() < limit` also
+    ///   signals exhaustion).
+    ///
+    /// An out-of-range `start` (≥ total active listings) returns an empty
+    /// page and a `next_cursor` equal to `start` without panicking.
+    pub fn get_listings_paginated(env: Env, start: u32, limit: u32) -> (Vec<Listing>, u32) {
+        // Clamp limit to the hard maximum.
+        let effective_limit = if limit > Self::MAX_PAGE_LIMIT {
+            Self::MAX_PAGE_LIMIT
+        } else if limit == 0 {
+            // A zero limit is valid; return an empty page immediately.
+            return (Vec::new(&env), start);
+        } else {
+            limit
+        };
+
+        let ids = get_active_listing_ids(&env);
+        let total = ids.len();
+
+        // Out-of-range start: return empty page + same cursor (no panic).
+        if start >= total {
+            return (Vec::new(&env), start);
+        }
+
+        let end = (start + effective_limit).min(total);
+        let mut listings: Vec<Listing> = Vec::new(&env);
+        for i in start..end {
+            let listing_id = ids.get(i).unwrap();
+            if let Some(listing) = load_listing(&env, listing_id) {
+                listings.push_back(listing);
+            }
+        }
+
+        let next_cursor = end;
+        (listings, next_cursor)
     }
 
     pub fn get_offers_by_listing(env: Env, listing_id: u64) -> Vec<Offer> {
@@ -1697,7 +1809,11 @@ impl MarketplaceContract {
         let royalty_bps = royalty_info.1;
 
         if royalty_bps > 0 && royalty_receiver != seller.clone() {
-            let royalty = amount * royalty_bps as i128 / 10_000;
+            let royalty = amount
+                .checked_mul(royalty_bps as i128)
+                .unwrap_or_else(|| panic_with_error!(env, MarketplaceError::ArithmeticOverflow))
+                .checked_div(10_000)
+                .unwrap_or_else(|| panic_with_error!(env, MarketplaceError::ArithmeticOverflow));
             token.transfer(&env.current_contract_address(), &royalty_receiver, &royalty);
             payout -= royalty;
         }
@@ -1718,7 +1834,11 @@ impl MarketplaceContract {
             let amt = if i == len - 1 {
                 payout - ds
             } else {
-                (payout * r.percentage as i128) / 10_000
+                payout
+                    .checked_mul(r.percentage as i128)
+                    .unwrap_or_else(|| panic_with_error!(env, MarketplaceError::ArithmeticOverflow))
+                    .checked_div(10_000)
+                    .unwrap_or_else(|| panic_with_error!(env, MarketplaceError::ArithmeticOverflow))
             };
             token.transfer(&env.current_contract_address(), &r.address, &amt);
             ds += amt;

@@ -25,6 +25,8 @@ pub const LISTING_PRICE_UPDATED: Symbol = symbol_short!("lst_pru");
 pub const LISTING_EXPIRED: Symbol = symbol_short!("lst_expd");
 pub const AUCTION_EXTENDED: Symbol = symbol_short!("auc_ext");
 pub const AUCTION_CANCELLED: Symbol = symbol_short!("auc_cncl");
+pub const PROTOCOL_FEE_COLLECTED: Symbol = symbol_short!("fee_cltd");
+pub const OFFER_RECLAIMED: Symbol = symbol_short!("ofr_rclm");
 
 // Event data structs
 // Event data structs
@@ -367,3 +369,19 @@ impl ProtocolFeeCollectedEvent {
 }
 
 // End of events
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfferReclaimedEvent {
+    pub offer_id: u64,
+    pub listing_id: u64,
+    pub offerer: Address,
+    pub amount: i128,
+}
+
+impl OfferReclaimedEvent {
+    #[allow(deprecated)]
+    pub fn publish(self, env: &Env) {
+        env.events().publish((OFFER_RECLAIMED,), self);
+    }
+}
