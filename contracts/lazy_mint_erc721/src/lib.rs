@@ -24,7 +24,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short,
-    token::Client as TokenClient, xdr::ToXdr, Address, Bytes, BytesN, Env, String,
+    token::Client as TokenClient, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Vec,
 };
 
 const TTL_THRESHOLD: u32 = 50_000;
@@ -47,6 +47,8 @@ pub enum Error {
     VoucherAlreadyRedeemed = 8,
     NotCreator = 9,
     InvalidSignature = 10,
+    NotAllowlisted = 11,
+    InvalidMerkleProof = 12,
 }
 
 // ─── Data types ───────────────────────────────────────────────────────────────
@@ -89,8 +91,9 @@ pub enum DataKey {
     Approved(u64),
     BalanceOf(Address),
     ApprovedForAll(Address, Address),
-    /// Voucher nonce tracking — token_id → bool (#39).
-    UsedVoucher(u64),
+    UsedVoucher(u64), // token_id → bool
+    MerkleRoot,       // BytesN<32> — root of allowlist Merkle tree
+    IsPublicPhase,    // bool — true once public minting is enabled
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -106,6 +109,41 @@ impl LazyMint721 {
         signature: &BytesN<64>,
     ) {
         env.crypto().ed25519_verify(pubkey, digest, signature);
+    }
+
+    /// Verify a standard binary Merkle proof against the stored root.
+    ///
+    /// Leaf = sha256(address XDR).
+    /// At each step the two sibling nodes are sorted (smaller first) before
+    /// hashing so that proofs are order-independent (standard OpenZeppelin
+    /// Merkle tree convention, ported to sha256).
+    fn verify_merkle_proof(
+        env: &Env,
+        root: &BytesN<32>,
+        leaf_preimage: &Address,
+        proof: &Vec<BytesN<32>>,
+    ) -> bool {
+        // Leaf hash = sha256(address XDR)
+        let mut computed: BytesN<32> = env
+            .crypto()
+            .sha256(&leaf_preimage.clone().to_xdr(env))
+            .into();
+
+        for sibling in proof.iter() {
+            let mut pair = Bytes::new(env);
+            // Sort the pair so the smaller hash goes first — makes proofs
+            // position-independent (matches standard Merkle tree tooling).
+            if computed.to_array() <= sibling.to_array() {
+                pair.append(&computed.clone().into());
+                pair.append(&sibling.clone().into());
+            } else {
+                pair.append(&sibling.into());
+                pair.append(&computed.clone().into());
+            }
+            computed = env.crypto().sha256(&pair).into();
+        }
+
+        &computed == root
     }
 }
 
@@ -161,18 +199,38 @@ impl LazyMint721 {
     // ── Lazy Mint (core) ──────────────────────────────────────────────────
 
     /// Buyer submits a signed voucher to mint their NFT.
-    ///
-    /// Issue #39: reverts with `VoucherAlreadyRedeemed` if the token_id (nonce)
-    /// has already been redeemed.
-    /// Issue #38: applies platform fee split on priced vouchers.
+    /// During the allowlist phase a valid Merkle proof for `buyer` is required.
+    /// The transaction fails (panics) if the ed25519 signature is invalid.
     pub fn redeem(
         env: Env,
         buyer: Address,
         voucher: MintVoucher,
         signature: BytesN<64>,
+        merkle_proof: Vec<BytesN<32>>,
     ) -> Result<u64, Error> {
         Self::extend_instance_ttl(&env);
         buyer.require_auth();
+
+        // 0. Allowlist phase check
+        let is_public: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::IsPublicPhase)
+            .unwrap_or(false);
+        if !is_public {
+            // Merkle root must be set; proof must be non-empty and valid.
+            let root: BytesN<32> = env
+                .storage()
+                .instance()
+                .get(&DataKey::MerkleRoot)
+                .ok_or(Error::NotAllowlisted)?;
+            if merkle_proof.is_empty() {
+                return Err(Error::NotAllowlisted);
+            }
+            if !Self::verify_merkle_proof(&env, &root, &buyer, &merkle_proof) {
+                return Err(Error::InvalidMerkleProof);
+            }
+        }
 
         // 1. Expiry check
         if voucher.valid_until != 0 && env.ledger().sequence() > voucher.valid_until as u32 {
@@ -482,6 +540,43 @@ impl LazyMint721 {
             .set(&DataKey::RoyaltyReceiver, &receiver);
         env.storage().instance().set(&DataKey::RoyaltyBps, &bps);
         Ok(())
+    }
+
+    /// Set the Merkle root for the allowlist.  Callable only by creator.
+    /// Automatically enables allowlist phase (clears public phase flag).
+    pub fn set_merkle_root(env: Env, root: BytesN<32>) -> Result<(), Error> {
+        Self::extend_instance_ttl(&env);
+        Self::only_creator(&env)?;
+        env.storage().instance().set(&DataKey::MerkleRoot, &root);
+        // Setting a new root resets to allowlist phase.
+        env.storage()
+            .instance()
+            .set(&DataKey::IsPublicPhase, &false);
+        Ok(())
+    }
+
+    /// Switch the sale to public phase — removes the allowlist restriction.
+    /// Callable only by creator. Irreversible unless a new Merkle root is set.
+    pub fn set_public_phase(env: Env) -> Result<(), Error> {
+        Self::extend_instance_ttl(&env);
+        Self::only_creator(&env)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::IsPublicPhase, &true);
+        Ok(())
+    }
+
+    /// Return whether the sale is currently in public phase.
+    pub fn is_public_phase(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::IsPublicPhase)
+            .unwrap_or(false)
+    }
+
+    /// Return the current Merkle root (None if unset).
+    pub fn merkle_root(env: Env) -> Option<BytesN<32>> {
+        env.storage().instance().get(&DataKey::MerkleRoot)
     }
 
     // ── Private helpers ───────────────────────────────────────────────────
