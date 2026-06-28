@@ -1,10 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import rateLimit from 'express-rate-limit';
 import routes from './api/routes.js';
 import { startPolling } from './poller.js';
-import { rateLimiter } from './api/rate-limit-middleware.js';
+import { globalRateLimiter, rateLimiter } from './api/rate-limit-middleware.js';
 import { metricsMiddleware, handleMetrics } from './metrics.js';
 import prisma from './db.js';
 
@@ -19,14 +18,6 @@ if (!process.env.MARKETPLACE_CONTRACT_ID) {
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-const limiter = rateLimit({
-    windowMs: 60 * 1000,
-    limit: 100,
-    standardHeaders: 'draft-8',
-    legacyHeaders: false,
-    message: { error: 'Too many requests, please try again after a minute.' },
-});
-
 app.use(cors({
     origin: process.env.NODE_ENV === 'production'
         ? (process.env.CORS_ORIGIN || '').split(',').map(o => o.trim()).filter(Boolean)
@@ -34,15 +25,17 @@ app.use(cors({
     credentials: true,
 }));
 app.use(express.json());
-app.use(limiter);
+
+// Apply global baseline rate limiter to all public endpoints
+app.use(globalRateLimiter);
 
 // Track response time metrics for all routes
 app.use(metricsMiddleware);
 
-// Expose /metrics for Prometheus scrapers (bypass global rate limit)
+// Expose /metrics for Prometheus scrapers (bypass rate limit via skip in globalRateLimiter)
 app.get('/metrics', handleMetrics);
 
-// Apply rate limiting to all other routes
+// Apply standard rate limiting for fallback
 app.use(rateLimiter);
 
 // API Routes
