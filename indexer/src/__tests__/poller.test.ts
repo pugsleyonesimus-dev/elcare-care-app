@@ -6,18 +6,33 @@ vi.mock('dotenv', () => ({ default: { config: vi.fn() } }));
 // ── Mock Prisma ───────────────────────────────────────────────────────────────
 
 const mockTx = vi.hoisted(() => ({
-  marketplaceEvent: { deleteMany: vi.fn().mockResolvedValue({}) },
+  marketplaceEvent: {
+    deleteMany: vi.fn().mockResolvedValue({}),
+    findMany: vi.fn().mockResolvedValue([]),
+    createMany: vi.fn().mockResolvedValue({}),
+  },
   listing: {
     deleteMany: vi.fn().mockResolvedValue({}),
     updateMany: vi.fn().mockResolvedValue({}),
+    upsert: vi.fn().mockResolvedValue({}),
   },
-  collection: { deleteMany: vi.fn().mockResolvedValue({}) },
+  auction: {
+    upsert: vi.fn().mockResolvedValue({}),
+    updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+  },
+  offer: {
+    upsert: vi.fn().mockResolvedValue({}),
+    update: vi.fn().mockResolvedValue({}),
+  },
+  collection: { deleteMany: vi.fn().mockResolvedValue({}), upsert: vi.fn().mockResolvedValue({}) },
   syncState: { update: vi.fn().mockResolvedValue({}) },
 }));
 
 const mockPrisma = vi.hoisted(() => ({
   marketplaceEvent: {
     create: vi.fn().mockResolvedValue({}),
+    findMany: vi.fn().mockResolvedValue([]),
+    createMany: vi.fn().mockResolvedValue({}),
   },
   listing: {
     upsert: vi.fn().mockResolvedValue({}),
@@ -86,6 +101,7 @@ vi.mock('@stellar/stellar-sdk', () => ({
 
 import {
   processEvent,
+  applyDecodedEvents,
   revertLedgers,
   validateHashContinuity,
   buildSyncStateLedgerData,
@@ -708,4 +724,71 @@ describe('startPolling — hash fetch failure', () => {
     );
     expect(hashAdvanceUpdate?.[0].data).not.toHaveProperty('lastLedgerHash');
   }, 8000);
+});
+
+// ── applyDecodedEvents — idempotency (#51) ────────────────────────────────────
+
+describe('applyDecodedEvents — idempotency (double-process produces no duplicates)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('inserts events on the first call', async () => {
+    const events = [
+      { eventType: 'LISTING_CREATED', listingId: 1n, actor: 'GA', ledgerSequence: 100, data: { artist: 'GA', collection: 'C', token_id: 1 } },
+      { eventType: 'ARTWORK_SOLD',    listingId: 2n, actor: 'GB', ledgerSequence: 100, data: { buyer: 'GB' } },
+    ];
+
+    // First call: no existing events
+    mockTx.marketplaceEvent.findMany.mockResolvedValueOnce([]);
+
+    const inserted = await applyDecodedEvents(events, mockTx);
+
+    expect(inserted).toHaveLength(2);
+    expect(mockTx.marketplaceEvent.createMany).toHaveBeenCalledOnce();
+    expect(mockTx.marketplaceEvent.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skipDuplicates: true })
+    );
+  });
+
+  it('produces no inserts when the same ledger is processed a second time', async () => {
+    const events = [
+      { eventType: 'LISTING_CREATED', listingId: 1n, actor: 'GA', ledgerSequence: 100, data: { artist: 'GA', collection: 'C', token_id: 1 } },
+      { eventType: 'ARTWORK_SOLD',    listingId: 2n, actor: 'GB', ledgerSequence: 100, data: { buyer: 'GB' } },
+    ];
+
+    // Second call: DB already has both events (simulating re-process after restart)
+    mockTx.marketplaceEvent.findMany.mockResolvedValueOnce([
+      { listingId: 1n, eventType: 'LISTING_CREATED', ledgerSequence: 100 },
+      { listingId: 2n, eventType: 'ARTWORK_SOLD',    ledgerSequence: 100 },
+    ]);
+
+    const inserted = await applyDecodedEvents(events, mockTx);
+
+    expect(inserted).toHaveLength(0);
+    // createMany must NOT be called (or be called with empty data)
+    const createManyCalls = mockTx.marketplaceEvent.createMany.mock.calls;
+    for (const [arg] of createManyCalls) {
+      expect(arg.data).toHaveLength(0);
+    }
+  });
+
+  it('only inserts truly new events when a ledger is partially re-processed', async () => {
+    const events = [
+      { eventType: 'LISTING_CREATED', listingId: 1n, actor: 'GA', ledgerSequence: 100, data: {} },
+      { eventType: 'ARTWORK_SOLD',    listingId: 2n, actor: 'GB', ledgerSequence: 100, data: {} },
+    ];
+
+    // Only the first event already exists
+    mockTx.marketplaceEvent.findMany.mockResolvedValueOnce([
+      { listingId: 1n, eventType: 'LISTING_CREATED', ledgerSequence: 100 },
+    ]);
+
+    const inserted = await applyDecodedEvents(events, mockTx);
+
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].eventType).toBe('ARTWORK_SOLD');
+    expect(mockTx.marketplaceEvent.createMany).toHaveBeenCalledOnce();
+    const [createArg] = mockTx.marketplaceEvent.createMany.mock.calls[0];
+    expect(createArg.data).toHaveLength(1);
+    expect(createArg.skipDuplicates).toBe(true);
+  });
 });

@@ -9,13 +9,15 @@ import {
 } from './metrics.js';
 import { collectMarketplaceEvents, MAX_LEDGER_WINDOW } from './event-sync.js';
 import redis from './redis.js';
+import { loadConfig } from './config.js';
 
 dotenv.config();
 
 const RPC_URL = process.env.STELLAR_RPC_URL || 'https://soroban-testnet.stellar.org';
 const CONTRACT_ID = process.env.MARKETPLACE_CONTRACT_ID || '';
 const LAUNCHPAD_CONTRACT_ID = process.env.LAUNCHPAD_CONTRACT_ID || '';
-const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || '5000');
+
+export const MAX_REORG_DEPTH = 100;
 
 // Retry back-off base in ms; doubles on each consecutive failure up to MAX_BACKOFF_MS.
 const BASE_BACKOFF_MS = 2_000;
@@ -127,6 +129,33 @@ export function buildSyncStateLedgerData(
   return { lastLedger };
 }
 
+/**
+ * Walks back from `divergedAt` up to MAX_REORG_DEPTH ledgers to find the
+ * deepest ledger still accessible on the network's canonical chain.
+ * Returns that ledger's sequence number as the safe revert point.
+ */
+export async function findReorgSafePoint(
+  divergedAt: number,
+  rpcServer: rpc.Server
+): Promise<number> {
+  for (let depth = 1; depth <= MAX_REORG_DEPTH; depth++) {
+    const candidate = divergedAt - depth;
+    if (candidate <= 0) return 0;
+    try {
+      const res = await rpcServer.getLedgers({
+        startLedger: candidate,
+        pagination: { limit: 1 },
+      });
+      if (res.ledgers && res.ledgers.length > 0) {
+        return candidate;
+      }
+    } catch {
+      // Ledger not accessible at this depth; keep walking back
+    }
+  }
+  return Math.max(0, divergedAt - MAX_REORG_DEPTH);
+}
+
 export async function validateHashContinuity(
   syncState: { lastLedger: number; lastLedgerHash: string | null },
   rpcServer: rpc.Server
@@ -142,8 +171,8 @@ export async function validateHashContinuity(
         const networkLedger = ledgersRes.ledgers[0];
         if (networkLedger.hash !== syncState.lastLedgerHash) {
           console.warn(`Chain re-org detected at ledger ${syncState.lastLedger}! DB hash: ${syncState.lastLedgerHash}, Network hash: ${networkLedger.hash}`);
-          const toLedger = Math.max(0, syncState.lastLedger - 1);
-          await revertLedgers(toLedger);
+          const safeLedger = await findReorgSafePoint(syncState.lastLedger, rpcServer);
+          await revertLedgers(safeLedger);
           return false;
         }
       }
@@ -155,12 +184,13 @@ export async function validateHashContinuity(
 }
 
 export async function startPolling() {
+  const config = loadConfig(); // Validates at startup; throws on invalid env values
   const contractIds = getContractIds();
   if (contractIds.length === 0) {
     throw new Error('At least one of MARKETPLACE_CONTRACT_ID or LAUNCHPAD_CONTRACT_ID must be set');
   }
 
-  console.log(`Starting indexer poller for contract(s): ${contractIds.join(', ')}`);
+  console.log(`Starting indexer poller for contract(s): ${contractIds.join(', ')} (pollIntervalMs=${config.pollIntervalMs}, maxLedgersPerCycle=${config.maxLedgersPerCycle})`);
 
   while (!shuttingDown) {
     try {
@@ -220,7 +250,9 @@ export async function startPolling() {
 
         syncState = resetState;
       }
-      const decodedEvents = await collectMarketplaceEvents(server, contractIds, startLedger, networkLatestLedger);
+      // Cap how many ledgers we process per cycle to bound catch-up batch size.
+      const batchEndLedger = Math.min(networkLatestLedger, startLedger + config.maxLedgersPerCycle - 1);
+      const decodedEvents = await collectMarketplaceEvents(server, contractIds, startLedger, batchEndLedger);
 
       let latestHash: string | null = null;
       if (decodedEvents.length > 0) {
@@ -250,22 +282,22 @@ export async function startPolling() {
         updateSyncMetrics(updatedState.lastLedger, networkLatestLedger);
 
         for (const ev of newEvents) emitSSEEvent(ev);
-      } else if (networkLatestLedger > syncState.lastLedger) {
+      } else if (batchEndLedger > syncState.lastLedger) {
         try {
           const ledgersRes = await server.getLedgers({
-            startLedger: networkLatestLedger,
+            startLedger: batchEndLedger,
             pagination: { limit: 1 },
           });
           if (ledgersRes.ledgers && ledgersRes.ledgers.length > 0) {
             latestHash = ledgersRes.ledgers[0].hash;
           }
         } catch (err) {
-          console.error(`Failed to fetch hash for latest network ledger ${networkLatestLedger}:`, err);
+          console.error(`Failed to fetch hash for ledger ${batchEndLedger}:`, err);
         }
 
         const updatedState = await prisma.syncState.update({
           where: { id: 1 },
-          data: buildSyncStateLedgerData(networkLatestLedger, latestHash),
+          data: buildSyncStateLedgerData(batchEndLedger, latestHash),
         });
 
         updateSyncMetrics(updatedState.lastLedger, networkLatestLedger);
@@ -292,7 +324,7 @@ export async function startPolling() {
     }
 
     consecutiveErrors = 0;
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+    await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
   }
 
     // If the loop exited due to shutdown signal, ensure resources are cleaned

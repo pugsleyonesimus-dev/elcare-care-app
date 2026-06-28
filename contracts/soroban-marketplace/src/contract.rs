@@ -495,7 +495,7 @@ impl MarketplaceContract {
         Self::validate_recipients(&env, &recipients, protocol_fee_bps);
 
         if !Self::is_token_whitelisted(&env, &token) {
-            panic_with_error!(&env, MarketplaceError::Unauthorized);
+            panic_with_error!(&env, MarketplaceError::TokenNotWhitelisted);
         }
 
         let listing_id = increment_listing_count(&env);
@@ -926,7 +926,7 @@ impl MarketplaceContract {
             panic_with_error!(&env, MarketplaceError::InvalidAuctionDuration);
         }
         if !Self::is_token_whitelisted(&env, &token) {
-            panic_with_error!(&env, MarketplaceError::Unauthorized);
+            panic_with_error!(&env, MarketplaceError::TokenNotWhitelisted);
         }
         let auction_id = increment_auction_count(&env);
         let end_time = env.ledger().timestamp() + duration;
@@ -1277,7 +1277,11 @@ impl MarketplaceContract {
         if amount <= 0 {
             panic_with_error!(&env, MarketplaceError::InsufficientOfferAmount);
         }
-        // #29: Escrow offer funds — transfer to contract at offer creation time.
+        // Reject at creation time if the offer token is not whitelisted,
+        // giving the offerer immediate feedback instead of a failed purchase later.
+        if !Self::is_token_whitelisted(&env, &token) {
+            panic_with_error!(&env, MarketplaceError::TokenNotWhitelisted);
+        }
         TokenClient::new(&env, &token).transfer(&offerer, &env.current_contract_address(), &amount);
         let offer_id = increment_offer_count(&env);
         save_offer(
@@ -1582,6 +1586,60 @@ impl MarketplaceContract {
         Self::get_active_listings(env, limit, start)
     }
 
+    /// Maximum `limit` accepted by `get_listings_paginated`.
+    pub const MAX_PAGE_LIMIT: u32 = 100;
+
+    /// Paginated view over active listings.
+    ///
+    /// Returns up to `limit` resolved [`Listing`] structs starting at cursor
+    /// `start` (a zero-based index into the active-listings index).  `limit`
+    /// is clamped to [`MAX_PAGE_LIMIT`] so clients cannot request oversized
+    /// responses.
+    ///
+    /// # Return value
+    /// `(listings, next_cursor)` where:
+    /// - `listings` contains the resolved `Listing` structs for the page.
+    /// - `next_cursor` is the index to pass as `start` to fetch the next
+    ///   page.  When the returned page is the last one (i.e. there are no
+    ///   further entries), `next_cursor` equals the total number of active
+    ///   listing IDs, which is ≥ the current active-listing count and can be
+    ///   used as a sentinel by callers (`listings.len() < limit` also
+    ///   signals exhaustion).
+    ///
+    /// An out-of-range `start` (≥ total active listings) returns an empty
+    /// page and a `next_cursor` equal to `start` without panicking.
+    pub fn get_listings_paginated(env: Env, start: u32, limit: u32) -> (Vec<Listing>, u32) {
+        // Clamp limit to the hard maximum.
+        let effective_limit = if limit > Self::MAX_PAGE_LIMIT {
+            Self::MAX_PAGE_LIMIT
+        } else if limit == 0 {
+            // A zero limit is valid; return an empty page immediately.
+            return (Vec::new(&env), start);
+        } else {
+            limit
+        };
+
+        let ids = get_active_listing_ids(&env);
+        let total = ids.len();
+
+        // Out-of-range start: return empty page + same cursor (no panic).
+        if start >= total {
+            return (Vec::new(&env), start);
+        }
+
+        let end = (start + effective_limit).min(total);
+        let mut listings: Vec<Listing> = Vec::new(&env);
+        for i in start..end {
+            let listing_id = ids.get(i).unwrap();
+            if let Some(listing) = load_listing(&env, listing_id) {
+                listings.push_back(listing);
+            }
+        }
+
+        let next_cursor = end;
+        (listings, next_cursor)
+    }
+
     pub fn get_offers_by_listing(env: Env, listing_id: u64) -> Vec<Offer> {
         let offer_ids = load_listing_offers(&env, listing_id);
         let mut offers = Vec::new(&env);
@@ -1751,7 +1809,11 @@ impl MarketplaceContract {
         let royalty_bps = royalty_info.1;
 
         if royalty_bps > 0 && royalty_receiver != seller.clone() {
-            let royalty = amount * royalty_bps as i128 / 10_000;
+            let royalty = amount
+                .checked_mul(royalty_bps as i128)
+                .unwrap_or_else(|| panic_with_error!(env, MarketplaceError::ArithmeticOverflow))
+                .checked_div(10_000)
+                .unwrap_or_else(|| panic_with_error!(env, MarketplaceError::ArithmeticOverflow));
             token.transfer(&env.current_contract_address(), &royalty_receiver, &royalty);
             payout -= royalty;
         }
@@ -1772,7 +1834,11 @@ impl MarketplaceContract {
             let amt = if i == len - 1 {
                 payout - ds
             } else {
-                (payout * r.percentage as i128) / 10_000
+                payout
+                    .checked_mul(r.percentage as i128)
+                    .unwrap_or_else(|| panic_with_error!(env, MarketplaceError::ArithmeticOverflow))
+                    .checked_div(10_000)
+                    .unwrap_or_else(|| panic_with_error!(env, MarketplaceError::ArithmeticOverflow))
             };
             token.transfer(&env.current_contract_address(), &r.address, &amt);
             ds += amt;
