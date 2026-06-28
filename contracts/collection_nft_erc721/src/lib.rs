@@ -8,11 +8,13 @@
 #![allow(clippy::too_many_arguments, deprecated)]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, String,
+    Vec,
 };
 
 const TTL_THRESHOLD: u32 = 50_000;
 const TTL_BUMP: u32 = 100_000;
+const MAX_BPS: u32 = 10_000; // 100% in basis points
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
@@ -28,6 +30,10 @@ pub enum Error {
     MaxSupplyReached = 6,
     NotCreator = 7,
     InsufficientBalance = 8,
+    MetadataFrozen = 9,  // base_uri cannot be updated after freeze
+    AlreadyFrozen = 10,  // freeze_metadata called more than once
+    InvalidBps = 11,     // basis points exceed MAX_BPS (10_000)
+    CollectionPaused = 12, // minting is paused
 }
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
@@ -51,6 +57,33 @@ pub enum DataKey {
     Approved(u64),
     BalanceOf(Address),
     ApprovedForAll(Address, Address),
+    BaseUri,        // String — collection-level base URI (optional)
+    MetadataFrozen, // bool   — permanently frozen when true
+    // Per-token royalty overrides (persistent, optional)
+    TokenRoyaltyReceiver(u64), // Address
+    TokenRoyaltyBps(u64),      // u32
+    Paused,         // bool   — minting paused when true
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Convert a u64 to its decimal ASCII representation as a Soroban `String`.
+/// Used to build `base_uri + token_id` paths in `token_uri()`.
+fn u64_to_string(env: &Env, mut n: u64) -> String {
+    let mut buf = [0u8; 20]; // u64::MAX has 20 decimal digits
+    let mut len = 0usize;
+    if n == 0 {
+        buf[0] = b'0';
+        len = 1;
+    } else {
+        while n > 0 {
+            buf[len] = b'0' + (n % 10) as u8;
+            n /= 10;
+            len += 1;
+        }
+        buf[..len].reverse();
+    }
+    String::from_bytes(env, &buf[..len])
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -110,6 +143,10 @@ impl NormalNFT721 {
         Self::extend_instance_ttl(&env);
         let creator = Self::only_creator(&env)?;
 
+        if env.storage().instance().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false) {
+            return Err(Error::CollectionPaused);
+        }
+
         let token_id: u64 = env
             .storage()
             .instance()
@@ -138,6 +175,10 @@ impl NormalNFT721 {
     pub fn batch_mint(env: Env, to: Address, uris: Vec<String>) -> Result<(), Error> {
         Self::extend_instance_ttl(&env);
         Self::only_creator(&env)?;
+
+        if env.storage().instance().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false) {
+            return Err(Error::CollectionPaused);
+        }
 
         let uris_len = uris.len();
         if uris_len == 0 {
@@ -365,6 +406,23 @@ impl NormalNFT721 {
     }
 
     pub fn token_uri(env: Env, token_id: u64) -> Result<String, Error> {
+        // Verify the token exists first.
+        if !env.storage().persistent().has(&DataKey::Owner(token_id)) {
+            return Err(Error::TokenNotFound);
+        }
+        // If a base URI is set, return base_uri + token_id.
+        if let Some(base) = env
+            .storage()
+            .instance()
+            .get::<DataKey, String>(&DataKey::BaseUri)
+        {
+            let id_str = u64_to_string(&env, token_id);
+            let mut combined: Bytes = base.into();
+            let id_bytes: Bytes = id_str.into();
+            combined.append(&id_bytes);
+            return Ok(String::from(&combined));
+        }
+        // Fall back to per-token URI stored at mint time.
         env.storage()
             .persistent()
             .get(&DataKey::TokenUri(token_id))
@@ -404,8 +462,8 @@ impl NormalNFT721 {
         env.storage().instance().get(&DataKey::Creator).unwrap()
     }
 
-    /// Returns (royalty_receiver, royalty_bps).
-    /// Marketplaces should call this before listing.
+    /// Returns (royalty_receiver, royalty_bps) for the collection default.
+    /// Preserved for backward compatibility with existing marketplace integrations.
     pub fn royalty_info(env: Env) -> (Address, u32) {
         (
             env.storage()
@@ -417,6 +475,55 @@ impl NormalNFT721 {
                 .get(&DataKey::RoyaltyBps)
                 .unwrap_or(0),
         )
+    }
+
+    /// EIP-2981-style royalty query: returns (recipient, royalty_amount) for a
+    /// given token and sale price.  Per-token overrides take priority over the
+    /// collection default.  Royalty amount = sale_price * bps / 10_000 using
+    /// checked arithmetic (returns 0 amount when sale_price is 0).
+    pub fn royalty_info_for(
+        env: Env,
+        token_id: u64,
+        sale_price: i128,
+    ) -> Result<(Address, i128), Error> {
+        // Resolve recipient and bps — per-token override wins if present.
+        let (receiver, bps) = if env
+            .storage()
+            .persistent()
+            .has(&DataKey::TokenRoyaltyBps(token_id))
+        {
+            let r: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TokenRoyaltyReceiver(token_id))
+                .ok_or(Error::NotInitialized)?;
+            let b: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TokenRoyaltyBps(token_id))
+                .unwrap_or(0);
+            (r, b)
+        } else {
+            (
+                env.storage()
+                    .instance()
+                    .get(&DataKey::RoyaltyReceiver)
+                    .ok_or(Error::NotInitialized)?,
+                env.storage()
+                    .instance()
+                    .get(&DataKey::RoyaltyBps)
+                    .unwrap_or(0),
+            )
+        };
+
+        // Checked arithmetic: sale_price * bps / MAX_BPS
+        let amount = sale_price
+            .checked_mul(bps as i128)
+            .unwrap_or(0)
+            .checked_div(MAX_BPS as i128)
+            .unwrap_or(0);
+
+        Ok((receiver, amount))
     }
 
     pub fn get_approved(env: Env, token_id: u64) -> Option<Address> {
@@ -449,6 +556,129 @@ impl NormalNFT721 {
             .set(&DataKey::RoyaltyReceiver, &receiver);
         env.storage().instance().set(&DataKey::RoyaltyBps, &bps);
         Ok(())
+    }
+
+    /// Set the collection-level default royalty with bps validation.
+    /// Replaces any previously stored default.  Callable only by creator.
+    pub fn set_default_royalty(env: Env, receiver: Address, bps: u32) -> Result<(), Error> {
+        Self::extend_instance_ttl(&env);
+        Self::only_creator(&env)?;
+        if bps > MAX_BPS {
+            return Err(Error::InvalidBps);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::RoyaltyReceiver, &receiver);
+        env.storage().instance().set(&DataKey::RoyaltyBps, &bps);
+        Ok(())
+    }
+
+    /// Set a per-token royalty override with bps validation.
+    /// When set, `royalty_info_for(token_id, ..)` uses this instead of the default.
+    /// Callable only by creator.
+    pub fn set_token_royalty(
+        env: Env,
+        token_id: u64,
+        receiver: Address,
+        bps: u32,
+    ) -> Result<(), Error> {
+        Self::extend_instance_ttl(&env);
+        Self::only_creator(&env)?;
+        if bps > MAX_BPS {
+            return Err(Error::InvalidBps);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::TokenRoyaltyReceiver(token_id), &receiver);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TokenRoyaltyBps(token_id), &bps);
+        env.storage().persistent().extend_ttl(
+            &DataKey::TokenRoyaltyReceiver(token_id),
+            TTL_THRESHOLD,
+            TTL_BUMP,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::TokenRoyaltyBps(token_id),
+            TTL_THRESHOLD,
+            TTL_BUMP,
+        );
+        Ok(())
+    }
+
+    /// Pause minting.  Callable only by creator.
+    pub fn pause(env: Env) -> Result<(), Error> {
+        Self::extend_instance_ttl(&env);
+        Self::only_creator(&env)?;
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Ok(())
+    }
+
+    /// Resume minting.  Callable only by creator.
+    pub fn unpause(env: Env) -> Result<(), Error> {
+        Self::extend_instance_ttl(&env);
+        Self::only_creator(&env)?;
+        env.storage().instance().set(&DataKey::Paused, &false);
+        Ok(())
+    }
+
+    /// Returns `true` if minting is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Update the collection-level base URI.  Reverts if metadata is frozen.
+    /// Callable only by creator.
+    pub fn set_base_uri(env: Env, base_uri: String) -> Result<(), Error> {
+        Self::extend_instance_ttl(&env);
+        Self::only_creator(&env)?;
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::MetadataFrozen)
+            .unwrap_or(false)
+        {
+            return Err(Error::MetadataFrozen);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::BaseUri, &base_uri);
+        Ok(())
+    }
+
+    /// Permanently freeze metadata.  Can only be called once; subsequent calls
+    /// revert with `AlreadyFrozen`.  Callable only by creator.
+    pub fn freeze_metadata(env: Env) -> Result<(), Error> {
+        Self::extend_instance_ttl(&env);
+        Self::only_creator(&env)?;
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::MetadataFrozen)
+            .unwrap_or(false)
+        {
+            return Err(Error::AlreadyFrozen);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MetadataFrozen, &true);
+        Ok(())
+    }
+
+    /// Returns `true` if metadata has been permanently frozen.
+    pub fn is_metadata_frozen(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::MetadataFrozen)
+            .unwrap_or(false)
+    }
+
+    /// Returns the stored base URI, or `None` if unset.
+    pub fn base_uri(env: Env) -> Option<String> {
+        env.storage().instance().get(&DataKey::BaseUri)
     }
 
     // ── Private helpers ───────────────────────────────────────────────────
