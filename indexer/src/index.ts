@@ -3,6 +3,11 @@ import cors from 'cors';
 import compression from 'compression';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
+import swaggerUi from 'swagger-ui-express';
+import yaml from 'yaml';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import routes from './api/routes.js';
 import { startPolling } from './poller.js';
 import { rateLimiter } from './api/rate-limit-middleware.js';
@@ -10,6 +15,13 @@ import { metricsMiddleware, handleMetrics } from './metrics.js';
 import prisma from './db.js';
 
 dotenv.config();
+
+// Load OpenAPI spec
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const openapiPath = path.join(__dirname, '..', 'openapi.yaml');
+const openapiFile = fs.readFileSync(openapiPath, 'utf8');
+const swaggerDoc = yaml.parse(openapiFile);
 
 // Fail fast — refuse to start if the contract ID is missing.
 if (!process.env.MARKETPLACE_CONTRACT_ID) {
@@ -43,6 +55,18 @@ app.use(metricsMiddleware);
 
 // Expose /metrics for Prometheus scrapers (bypass global rate limit)
 app.get('/metrics', handleMetrics);
+
+// Serve OpenAPI docs
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDoc, {
+    swaggerOptions: {
+        url: '/openapi.yaml',
+    },
+}));
+
+// Serve raw OpenAPI spec
+app.get('/openapi.yaml', (req: express.Request, res: express.Response) => {
+    res.type('text/yaml').sendFile(openapiPath);
+});
 
 // Apply rate limiting to all other routes
 app.use(rateLimiter);
