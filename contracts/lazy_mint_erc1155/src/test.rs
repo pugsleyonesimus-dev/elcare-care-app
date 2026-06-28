@@ -40,12 +40,15 @@ fn setup_env() -> (
     let royalty_bps = 500u32;
     let royalty_receiver = Address::generate(&env);
 
+    let fee_receiver = Address::generate(&env);
     client.initialize(
         &creator,
         &creator_pubkey,
         &name,
         &royalty_bps,
         &royalty_receiver,
+        &fee_receiver,
+        &0u32,
     );
 
     (env, client, contract_id, creator, creator_pubkey)
@@ -90,6 +93,7 @@ fn test_redeem_fails_unregistered_edition() {
     let buyer = Address::generate(&env);
     let voucher = MintVoucher1155 {
         token_id: 1,
+        nonce: 0,
         buyer_quota: 10,
         price_per_unit: 0,
         currency: Address::generate(&env),
@@ -116,6 +120,7 @@ fn test_redeem_enforces_max_supply() {
     let _buyer = Address::generate(&env);
     let _voucher = MintVoucher1155 {
         token_id,
+        nonce: 0,
         buyer_quota: 10,
         price_per_unit: 0,
         currency: Address::generate(&env),
@@ -146,6 +151,7 @@ fn instance_ttl_is_extended_on_redeem() {
 
     let voucher_1 = MintVoucher1155 {
         token_id: token_1,
+        nonce: 0,
         buyer_quota: 10,
         price_per_unit: 0,
         currency: Address::generate(&env),
@@ -160,6 +166,7 @@ fn instance_ttl_is_extended_on_redeem() {
 
     let voucher_2 = MintVoucher1155 {
         token_id: token_2,
+        nonce: 1,
         buyer_quota: 10,
         price_per_unit: 0,
         currency: Address::generate(&env),
@@ -182,6 +189,7 @@ fn persistent_total_supply_ttl_is_extended_on_redeem() {
     let buyer = Address::generate(&env);
     let voucher = MintVoucher1155 {
         token_id,
+        nonce: 0,
         buyer_quota: 10,
         price_per_unit: 0,
         currency: Address::generate(&env),
@@ -215,6 +223,7 @@ fn persistent_balance_from_ttl_is_extended_on_transfer() {
 
     let voucher = MintVoucher1155 {
         token_id,
+        nonce: 0,
         buyer_quota: 10,
         price_per_unit: 0,
         currency: Address::generate(&env),
@@ -271,6 +280,8 @@ fn test_invalid_signature_returns_proper_error() {
         &String::from_str(&env, "Test Lazy 1155"),
         &500u32,
         &Address::generate(&env),
+        &Address::generate(&env),
+        &0u32,
     );
 
     let buyer = Address::generate(&env);
@@ -282,6 +293,7 @@ fn test_invalid_signature_returns_proper_error() {
     // Create a voucher with valid data
     let voucher = crate::MintVoucher1155 {
         token_id,
+        nonce: 0,
         buyer_quota: 100u128,
         price_per_unit: 50i128,
         currency: Address::generate(&env),
@@ -319,6 +331,8 @@ fn test_wrong_signature_format_returns_proper_error() {
         &String::from_str(&env, "Test Lazy 1155"),
         &500u32,
         &Address::generate(&env),
+        &Address::generate(&env),
+        &0u32,
     );
 
     let buyer = Address::generate(&env);
@@ -330,6 +344,7 @@ fn test_wrong_signature_format_returns_proper_error() {
     // Create a voucher
     let voucher = crate::MintVoucher1155 {
         token_id,
+        nonce: 0,
         buyer_quota: 200u128,
         price_per_unit: 75i128,
         currency: Address::generate(&env),
@@ -367,6 +382,8 @@ fn test_signature_for_wrong_voucher_data_returns_proper_error() {
         &String::from_str(&env, "Test Lazy 1155"),
         &500u32,
         &Address::generate(&env),
+        &Address::generate(&env),
+        &0u32,
     );
 
     let buyer = Address::generate(&env);
@@ -378,6 +395,7 @@ fn test_signature_for_wrong_voucher_data_returns_proper_error() {
     // Create original voucher
     let original_voucher = crate::MintVoucher1155 {
         token_id,
+        nonce: 0,
         buyer_quota: 300u128,
         price_per_unit: 100i128,
         currency: Address::generate(&env),
@@ -389,6 +407,7 @@ fn test_signature_for_wrong_voucher_data_returns_proper_error() {
     // Create modified voucher (different token_id)
     let modified_voucher = crate::MintVoucher1155 {
         token_id: 999, // Different token_id
+        nonce: 1,
         buyer_quota: 300u128,
         price_per_unit: 100i128,
         currency: Address::generate(&env),
@@ -427,6 +446,8 @@ fn test_graceful_signature_error_handling_with_payment() {
         &String::from_str(&env, "Test Lazy 1155"),
         &500u32,
         &Address::generate(&env),
+        &Address::generate(&env),
+        &0u32,
     );
 
     let buyer = Address::generate(&env);
@@ -438,6 +459,7 @@ fn test_graceful_signature_error_handling_with_payment() {
     // Create a voucher with non-zero price
     let voucher = crate::MintVoucher1155 {
         token_id,
+        nonce: 0,
         buyer_quota: 500u128,
         price_per_unit: 150i128, // Non-zero price
         currency: Address::generate(&env),
@@ -476,6 +498,8 @@ fn test_signature_error_with_maximum_quota() {
         &String::from_str(&env, "Test Lazy 1155"),
         &500u32,
         &Address::generate(&env),
+        &Address::generate(&env),
+        &0u32,
     );
 
     let buyer = Address::generate(&env);
@@ -487,6 +511,7 @@ fn test_signature_error_with_maximum_quota() {
     // Create a voucher with maximum quota
     let voucher = crate::MintVoucher1155 {
         token_id,
+        nonce: 0,
         buyer_quota: u128::MAX,
         price_per_unit: 0i128, // Free mint
         currency: Address::generate(&env),
@@ -524,6 +549,8 @@ fn test_lazy_mint_erc1155_events_emit_successfully() {
         &String::from_str(&env, "Test Lazy 1155"),
         &500u32,
         &Address::generate(&env),
+        &Address::generate(&env),
+        &0u32,
     );
 
     let buyer = Address::generate(&env);
@@ -557,6 +584,8 @@ fn test_voucher_expired_returns_proper_error() {
         &String::from_str(&env, "Expiry Test"),
         &500u32,
         &Address::generate(&env),
+        &Address::generate(&env),
+        &0u32,
     );
 
     let buyer = Address::generate(&env);
@@ -569,6 +598,7 @@ fn test_voucher_expired_returns_proper_error() {
 
     let voucher = crate::MintVoucher1155 {
         token_id,
+        nonce: 0,
         buyer_quota: 100u128,
         price_per_unit: 0i128,
         currency: Address::generate(&env),
@@ -597,6 +627,7 @@ fn burn_with_missing_total_supply_key_returns_zero_not_amount() {
     let buyer = Address::generate(&env);
     let voucher = MintVoucher1155 {
         token_id,
+        nonce: 0,
         buyer_quota: 10,
         price_per_unit: 0,
         currency: Address::generate(&env),
@@ -620,4 +651,189 @@ fn burn_with_missing_total_supply_key_returns_zero_not_amount() {
 
     // total_supply must be 0, not 3 (the old unwrap_or(amount) result).
     assert_eq!(client.total_supply(&token_id), 0u128);
+}
+
+// ─── Issue #39 — Voucher nonce / replay protection tests ─────────────────────
+
+fn make_voucher_1155_with_nonce(
+    env: &Env,
+    token_id: u64,
+    nonce: u64,
+) -> MintVoucher1155 {
+    MintVoucher1155 {
+        token_id,
+        nonce,
+        buyer_quota: 100u128,
+        price_per_unit: 0i128,
+        currency: Address::generate(env),
+        uri: String::from_str(env, "ipfs://test"),
+        uri_hash: BytesN::from_array(env, &[0u8; 32]),
+        valid_until: 0,
+    }
+}
+
+/// Marking a voucher nonce as redeemed then re-submitting it returns VoucherAlreadyRedeemed.
+#[test]
+fn voucher_nonce_replay_rejected() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    env.mock_all_auths();
+
+    let contract_id = env.register(LazyMint1155, ());
+    let client = LazyMint1155Client::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let creator_pubkey = creator_signing_key();
+    let fee_receiver = Address::generate(&env);
+
+    client.initialize(
+        &creator,
+        &BytesN::from_array(&env, &creator_pubkey.verifying_key().to_bytes()),
+        &String::from_str(&env, "Replay Test"),
+        &0u32,
+        &Address::generate(&env),
+        &fee_receiver,
+        &0u32,
+    );
+
+    let token_id = 1u64;
+    let nonce = 42u64;
+    client.register_edition(&token_id, &1000u128);
+
+    // Manually mark nonce 42 as already redeemed
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&crate::DataKey::RedeemedVoucher(nonce), &true);
+    });
+
+    let buyer = Address::generate(&env);
+    let voucher = make_voucher_1155_with_nonce(&env, token_id, nonce);
+    let sig = BytesN::from_array(&env, &[0u8; 64]);
+
+    let result = client.try_redeem(&buyer, &voucher, &1u128, &sig);
+    assert_eq!(result, Err(Ok(Error::VoucherAlreadyRedeemed)));
+}
+
+/// is_voucher_redeemed returns false before and true after nonce is marked.
+#[test]
+fn is_voucher_redeemed_tracks_nonce() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    env.mock_all_auths();
+
+    let contract_id = env.register(LazyMint1155, ());
+    let client = LazyMint1155Client::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let fee_receiver = Address::generate(&env);
+
+    client.initialize(
+        &creator,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &String::from_str(&env, "Nonce Track"),
+        &0u32,
+        &Address::generate(&env),
+        &fee_receiver,
+        &0u32,
+    );
+
+    let nonce = 99u64;
+    assert!(!client.is_voucher_redeemed(&nonce));
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&crate::DataKey::RedeemedVoucher(nonce), &true);
+    });
+
+    assert!(client.is_voucher_redeemed(&nonce));
+}
+
+/// Different nonces are independent — one redeemed nonce does not block others.
+#[test]
+fn different_nonces_are_independent_1155() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    env.mock_all_auths();
+
+    let contract_id = env.register(LazyMint1155, ());
+    let client = LazyMint1155Client::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let fee_receiver = Address::generate(&env);
+
+    client.initialize(
+        &creator,
+        &BytesN::from_array(&env, &[2u8; 32]),
+        &String::from_str(&env, "Nonce Indep"),
+        &0u32,
+        &Address::generate(&env),
+        &fee_receiver,
+        &0u32,
+    );
+
+    let token_id = 1u64;
+    client.register_edition(&token_id, &1000u128);
+
+    // Mark nonce 1 as redeemed
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&crate::DataKey::RedeemedVoucher(1u64), &true);
+    });
+
+    // Nonce 2 must remain unredeemed
+    assert!(client.is_voucher_redeemed(&1u64));
+    assert!(!client.is_voucher_redeemed(&2u64));
+
+    // Attempt to redeem with nonce 2 (fails on signature, not replay)
+    let buyer = Address::generate(&env);
+    let voucher2 = make_voucher_1155_with_nonce(&env, token_id, 2u64);
+    let bad_sig = BytesN::from_array(&env, &[0u8; 64]);
+    let result = client.try_redeem(&buyer, &voucher2, &1u128, &bad_sig);
+    // Should NOT be VoucherAlreadyRedeemed
+    assert_ne!(result, Err(Ok(Error::VoucherAlreadyRedeemed)));
+}
+
+/// Replay check is evaluated before signature verification.
+#[test]
+fn replay_check_before_sig_verification_1155() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    env.mock_all_auths();
+
+    let contract_id = env.register(LazyMint1155, ());
+    let client = LazyMint1155Client::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let fee_receiver = Address::generate(&env);
+
+    client.initialize(
+        &creator,
+        &BytesN::from_array(&env, &[3u8; 32]),
+        &String::from_str(&env, "Order Test"),
+        &0u32,
+        &Address::generate(&env),
+        &fee_receiver,
+        &0u32,
+    );
+
+    let token_id = 1u64;
+    let nonce = 77u64;
+    client.register_edition(&token_id, &1000u128);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&crate::DataKey::RedeemedVoucher(nonce), &true);
+    });
+
+    let buyer = Address::generate(&env);
+    let voucher = make_voucher_1155_with_nonce(&env, token_id, nonce);
+    let any_sig = BytesN::from_array(&env, &[99u8; 64]);
+
+    // Replay error must come before any host abort from sig verification
+    let result = client.try_redeem(&buyer, &voucher, &1u128, &any_sig);
+    assert_eq!(result, Err(Ok(Error::VoucherAlreadyRedeemed)));
 }

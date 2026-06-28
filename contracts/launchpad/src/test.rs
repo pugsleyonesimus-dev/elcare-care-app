@@ -93,6 +93,7 @@ fn deploys_normal_721_twice_with_unique_addresses() {
         &1_000u64,
         &500u32,
         &royalty_receiver,
+        &0u32,
         &salt_a,
     );
 
@@ -104,6 +105,7 @@ fn deploys_normal_721_twice_with_unique_addresses() {
         &1_500u64,
         &500u32,
         &royalty_receiver,
+        &0u32,
         &salt_b,
     );
 
@@ -139,6 +141,7 @@ fn deploys_normal_1155_twice_with_unique_addresses() {
         &String::from_str(&env, "Creator 1155 A"),
         &500u32,
         &royalty_receiver,
+        &0u32,
         &salt_a,
     );
 
@@ -148,6 +151,7 @@ fn deploys_normal_1155_twice_with_unique_addresses() {
         &String::from_str(&env, "Creator 1155 B"),
         &500u32,
         &royalty_receiver,
+        &0u32,
         &salt_b,
     );
 
@@ -187,6 +191,7 @@ fn deploys_lazy_721_twice_with_unique_addresses() {
         &1_000u64,
         &750u32,
         &royalty_receiver,
+        &0u32,
         &salt_a,
     );
 
@@ -199,6 +204,7 @@ fn deploys_lazy_721_twice_with_unique_addresses() {
         &1_200u64,
         &750u32,
         &royalty_receiver,
+        &0u32,
         &salt_b,
     );
 
@@ -236,6 +242,7 @@ fn deploys_lazy_1155_twice_with_unique_addresses() {
         &String::from_str(&env, "Lazy 1155 A"),
         &600u32,
         &royalty_receiver,
+        &0u32,
         &salt_a,
     );
 
@@ -246,6 +253,7 @@ fn deploys_lazy_1155_twice_with_unique_addresses() {
         &String::from_str(&env, "Lazy 1155 B"),
         &600u32,
         &royalty_receiver,
+        &0u32,
         &salt_b,
     );
 
@@ -287,6 +295,7 @@ fn deploy_calls_extend_instance_ttl() {
         &100u64,
         &500u32,
         &royalty_receiver,
+        &0u32,
         &salt_a,
     );
 
@@ -301,6 +310,7 @@ fn deploy_calls_extend_instance_ttl() {
         &String::from_str(&env, "TTL B"),
         &500u32,
         &royalty_receiver,
+        &0u32,
         &salt_b,
     );
 
@@ -354,6 +364,7 @@ fn same_salt_different_creators_normal_721_yields_different_addresses() {
         &100u64,
         &500u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -365,6 +376,7 @@ fn same_salt_different_creators_normal_721_yields_different_addresses() {
         &100u64,
         &500u32,
         &royalty_receiver,
+        &0u32,
         &salt, // identical raw salt
     );
 
@@ -394,6 +406,7 @@ fn same_salt_different_creators_normal_1155_yields_different_addresses() {
         &String::from_str(&env, "Alice 1155"),
         &500u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -403,6 +416,7 @@ fn same_salt_different_creators_normal_1155_yields_different_addresses() {
         &String::from_str(&env, "Bob 1155"),
         &500u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -432,6 +446,7 @@ fn same_salt_different_creators_lazy_721_yields_different_addresses() {
         &500u64,
         &300u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -444,6 +459,7 @@ fn same_salt_different_creators_lazy_721_yields_different_addresses() {
         &500u64,
         &300u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -471,6 +487,7 @@ fn same_salt_different_creators_lazy_1155_yields_different_addresses() {
         &String::from_str(&env, "Alice L1155"),
         &400u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -481,6 +498,7 @@ fn same_salt_different_creators_lazy_1155_yields_different_addresses() {
         &String::from_str(&env, "Bob L1155"),
         &400u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -515,6 +533,7 @@ fn front_runner_cannot_grief_normal_721() {
         &100u64,
         &0u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -527,6 +546,7 @@ fn front_runner_cannot_grief_normal_721() {
         &100u64,
         &0u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -555,6 +575,7 @@ fn front_runner_cannot_grief_normal_1155() {
         &String::from_str(&env, "Bob Grief 1155"),
         &0u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -564,6 +585,7 @@ fn front_runner_cannot_grief_normal_1155() {
         &String::from_str(&env, "Alice 1155"),
         &0u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -593,6 +615,7 @@ fn front_runner_cannot_grief_lazy_721() {
         &200u64,
         &0u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -605,6 +628,7 @@ fn front_runner_cannot_grief_lazy_721() {
         &200u64,
         &0u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -632,6 +656,7 @@ fn front_runner_cannot_grief_lazy_1155() {
         &String::from_str(&env, "Bob Grief L1155"),
         &0u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -642,6 +667,7 @@ fn front_runner_cannot_grief_lazy_1155() {
         &String::from_str(&env, "Alice L1155"),
         &0u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -692,6 +718,7 @@ fn deploy_without_wasm_hashes_fails() {
         &100u64,
         &500u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
     assert_eq!(result, Err(Ok(Error::WasmHashNotSet)));
@@ -778,6 +805,7 @@ fn collections_by_creator_returns_correct_collections() {
         &100u64,
         &500u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -824,7 +852,7 @@ pub enum LazyError {
     TokenNotFound = 5,
     MaxSupplyReached = 6,
     VoucherExpired = 7,
-    VoucherAlreadyUsed = 8,
+    VoucherAlreadyRedeemed = 8,
     NotCreator = 9,
     InvalidSignature = 10,
 }
@@ -861,6 +889,7 @@ fn deployed_lazy_721_rejects_invalid_ed25519_signature() {
         &1_000u64,
         &0u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -903,6 +932,7 @@ fn deployed_lazy_721_rejects_expired_voucher() {
         &1_000u64,
         &0u32,
         &royalty_receiver,
+        &0u32,
         &salt,
     );
 
@@ -927,5 +957,328 @@ fn deployed_lazy_721_rejects_expired_voucher() {
         result,
         Err(Ok(LazyError::VoucherExpired)),
         "expired voucher must return VoucherExpired"
+    );
+}
+
+// ─── Issue #37 — Registry metadata tests ─────────────────────────────────────
+
+/// deploy_normal_721 stores name, symbol, and ledger in the collection record.
+#[test]
+fn registry_stores_full_metadata_normal_721() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 42;
+    });
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    let salt = BytesN::from_array(&env, &[0xF1u8; 32]);
+    let currency = Address::generate(&env);
+    let royalty_receiver = Address::generate(&env);
+
+    let addr = client.deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "My Collection"),
+        &String::from_str(&env, "MYC"),
+        &500u64,
+        &0u32,
+        &royalty_receiver,
+        &0u32, // platform_fee_bps
+        &salt,
+    );
+
+    let record = client.get_collection(&addr).unwrap();
+    assert_eq!(record.name, String::from_str(&env, "My Collection"));
+    assert_eq!(record.symbol, String::from_str(&env, "MYC"));
+    assert_eq!(record.ledger, 42u32);
+    assert_eq!(record.platform_fee_bps, 0u32);
+    assert_eq!(record.creator, creator);
+}
+
+/// get_collection returns the same record as all_collections for the same address.
+#[test]
+fn get_collection_matches_all_collections() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    let salt = BytesN::from_array(&env, &[0xF2u8; 32]);
+    let currency = Address::generate(&env);
+    let royalty_receiver = Address::generate(&env);
+
+    let addr = client.deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "Alpha"),
+        &String::from_str(&env, "ALP"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &0u32,
+        &salt,
+    );
+
+    let by_addr = client.get_collection(&addr).unwrap();
+    let all = client.all_collections();
+    let from_all = all.get(0).unwrap();
+    assert_eq!(by_addr.address, from_all.address);
+    assert_eq!(by_addr.name, from_all.name);
+}
+
+/// get_collections with start=0, limit=2 returns first two records in order.
+#[test]
+fn get_collections_paginated_returns_correct_slice() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    let currency = Address::generate(&env);
+    let royalty_receiver = Address::generate(&env);
+
+    let salt_a = BytesN::from_array(&env, &[0xF3u8; 32]);
+    let salt_b = BytesN::from_array(&env, &[0xF4u8; 32]);
+    let salt_c = BytesN::from_array(&env, &[0xF5u8; 32]);
+
+    client.deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "Alpha"),
+        &String::from_str(&env, "ALP"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &0u32,
+        &salt_a,
+    );
+    client.deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "Beta"),
+        &String::from_str(&env, "BET"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &0u32,
+        &salt_b,
+    );
+    client.deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "Gamma"),
+        &String::from_str(&env, "GAM"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &0u32,
+        &salt_c,
+    );
+
+    assert_eq!(client.collection_count(), 3u64);
+
+    let page0 = client.get_collections(&0u64, &2u32);
+    assert_eq!(page0.len(), 2);
+    assert_eq!(page0.get(0).unwrap().name, String::from_str(&env, "Alpha"));
+    assert_eq!(page0.get(1).unwrap().name, String::from_str(&env, "Beta"));
+
+    let page1 = client.get_collections(&2u64, &2u32);
+    assert_eq!(page1.len(), 1);
+    assert_eq!(page1.get(0).unwrap().name, String::from_str(&env, "Gamma"));
+}
+
+/// get_collections beyond range returns empty vec.
+#[test]
+fn get_collections_out_of_range_returns_empty() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    let currency = Address::generate(&env);
+    let royalty_receiver = Address::generate(&env);
+    let salt = BytesN::from_array(&env, &[0xF6u8; 32]);
+
+    client.deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "Only"),
+        &String::from_str(&env, "ONL"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &0u32,
+        &salt,
+    );
+
+    let empty = client.get_collections(&10u64, &5u32);
+    assert_eq!(empty.len(), 0);
+}
+
+// ─── Issue #38 — Per-collection platform fee tests ────────────────────────────
+
+/// Deploying with platform_fee_bps > MAX_FEE_BPS (2000) is rejected.
+#[test]
+fn invalid_fee_bps_rejected_at_deploy() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    let salt = BytesN::from_array(&env, &[0xE1u8; 32]);
+    let currency = Address::generate(&env);
+    let royalty_receiver = Address::generate(&env);
+
+    let result = client.try_deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "Fee Test"),
+        &String::from_str(&env, "FEE"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &2001u32, // exceeds MAX_FEE_BPS
+        &salt,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidFeeBps)));
+}
+
+/// Deploying with platform_fee_bps = MAX_FEE_BPS (2000) succeeds.
+#[test]
+fn valid_fee_bps_at_max_boundary_succeeds() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    let salt = BytesN::from_array(&env, &[0xE2u8; 32]);
+    let currency = Address::generate(&env);
+    let royalty_receiver = Address::generate(&env);
+
+    let addr = client.deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "Max Fee"),
+        &String::from_str(&env, "MXF"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &2000u32, // exactly MAX_FEE_BPS
+        &salt,
+    );
+
+    let record = client.get_collection(&addr).unwrap();
+    assert_eq!(record.platform_fee_bps, 2000u32);
+}
+
+/// Configured fee is persisted in the collection record for all 4 deploy types.
+#[test]
+fn fee_stored_in_collection_record_for_all_types() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    let currency = Address::generate(&env);
+    let royalty_receiver = Address::generate(&env);
+    let creator_pubkey = BytesN::from_array(&env, &[0xAAu8; 32]);
+
+    let addr_721 = client.deploy_normal_721(
+        &creator,
+        &currency,
+        &String::from_str(&env, "N721"),
+        &String::from_str(&env, "N721"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &500u32,
+        &BytesN::from_array(&env, &[0xE3u8; 32]),
+    );
+    assert_eq!(client.get_collection(&addr_721).unwrap().platform_fee_bps, 500u32);
+
+    let addr_1155 = client.deploy_normal_1155(
+        &creator,
+        &currency,
+        &String::from_str(&env, "N1155"),
+        &0u32,
+        &royalty_receiver,
+        &750u32,
+        &BytesN::from_array(&env, &[0xE4u8; 32]),
+    );
+    assert_eq!(client.get_collection(&addr_1155).unwrap().platform_fee_bps, 750u32);
+
+    let addr_l721 = client.deploy_lazy_721(
+        &creator,
+        &currency,
+        &creator_pubkey,
+        &String::from_str(&env, "L721"),
+        &String::from_str(&env, "L721"),
+        &100u64,
+        &0u32,
+        &royalty_receiver,
+        &100u32,
+        &BytesN::from_array(&env, &[0xE5u8; 32]),
+    );
+    assert_eq!(client.get_collection(&addr_l721).unwrap().platform_fee_bps, 100u32);
+
+    let addr_l1155 = client.deploy_lazy_1155(
+        &creator,
+        &currency,
+        &creator_pubkey,
+        &String::from_str(&env, "L1155"),
+        &0u32,
+        &royalty_receiver,
+        &200u32,
+        &BytesN::from_array(&env, &[0xE6u8; 32]),
+    );
+    assert_eq!(client.get_collection(&addr_l1155).unwrap().platform_fee_bps, 200u32);
+}
+
+/// Invalid fee rejected for all 4 deploy function variants.
+#[test]
+fn invalid_fee_rejected_for_all_deploy_variants() {
+    let env = Env::default();
+    env.ledger().with_mut(|li| li.sequence_number = 1);
+    let (client, _admin, _fee_receiver, creator) = setup_launchpad(&env);
+
+    let currency = Address::generate(&env);
+    let royalty_receiver = Address::generate(&env);
+    let creator_pubkey = BytesN::from_array(&env, &[0xBBu8; 32]);
+
+    assert_eq!(
+        client.try_deploy_normal_1155(
+            &creator,
+            &currency,
+            &String::from_str(&env, "Bad Fee 1155"),
+            &0u32,
+            &royalty_receiver,
+            &9999u32,
+            &BytesN::from_array(&env, &[0xF7u8; 32]),
+        ),
+        Err(Ok(Error::InvalidFeeBps))
+    );
+
+    assert_eq!(
+        client.try_deploy_lazy_721(
+            &creator,
+            &currency,
+            &creator_pubkey,
+            &String::from_str(&env, "Bad Fee L721"),
+            &String::from_str(&env, "BFL"),
+            &100u64,
+            &0u32,
+            &royalty_receiver,
+            &5000u32,
+            &BytesN::from_array(&env, &[0xF8u8; 32]),
+        ),
+        Err(Ok(Error::InvalidFeeBps))
+    );
+
+    assert_eq!(
+        client.try_deploy_lazy_1155(
+            &creator,
+            &currency,
+            &creator_pubkey,
+            &String::from_str(&env, "Bad Fee L1155"),
+            &0u32,
+            &royalty_receiver,
+            &3000u32,
+            &BytesN::from_array(&env, &[0xF9u8; 32]),
+        ),
+        Err(Ok(Error::InvalidFeeBps))
     );
 }
