@@ -5,13 +5,42 @@ import redis from '../redis.js';
 import { cacheMiddleware } from './cache-middleware.js';
 import { strictRateLimiter } from './rate-limit-middleware.js';
 
-// SSE clients registry
-const sseClients: Response[] = [];
+// SSE configuration
+const MAX_SSE_CONNECTIONS = parseInt(process.env.MAX_SSE_CONNECTIONS || '100');
+const SSE_HEARTBEAT_INTERVAL_MS = parseInt(process.env.SSE_HEARTBEAT_INTERVAL_MS || '30000');
+
+// SSE clients registry with heartbeat intervals
+const sseClients: Map<Response, NodeJS.Timer> = new Map();
+
 export function emitSSEEvent(event: any) {
     const data = `data: ${JSON.stringify(event, (_k, v) => typeof v === 'bigint' ? v.toString() : v)}\n\n`;
-    for (const client of sseClients) {
-        try { client.write(data); } catch { /* ignore closed connections */ }
+    for (const client of sseClients.keys()) {
+        try { client.write(data); } catch { 
+            // Remove closed connections
+            clearInterval(sseClients.get(client));
+            sseClients.delete(client);
+        }
     }
+}
+
+function setupSSEHeartbeat(res: Response): void {
+    const heartbeatInterval = setInterval(() => {
+        try {
+            res.write(`: heartbeat\n\n`);
+        } catch {
+            // Connection closed, cleanup will happen on disconnect
+        }
+    }, SSE_HEARTBEAT_INTERVAL_MS);
+
+    sseClients.set(res, heartbeatInterval);
+}
+
+function cleanupSSEClient(res: Response): void {
+    const interval = sseClients.get(res);
+    if (interval) {
+        clearInterval(interval);
+    }
+    sseClients.delete(res);
 }
 
 const router = Router();
@@ -429,6 +458,35 @@ router.get('/stats', async (req: Request, res: Response) => {
         console.error('Error details:', err);
         res.status(500).json({ error: 'Failed to fetch stats' });
     }
+});
+
+// GET /events — Server-Sent Events stream with keep-alive heartbeats
+router.get('/events', (req: Request, res: Response) => {
+    // Check connection limit
+    if (sseClients.size >= MAX_SSE_CONNECTIONS) {
+        return res.status(503).json({ error: 'Too many SSE connections' });
+    }
+
+    // Setup SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    // Setup heartbeat
+    setupSSEHeartbeat(res);
+
+    // Send initial connection message
+    res.write(`data: ${JSON.stringify({ type: 'CONNECTED' })}\n\n`);
+
+    // Cleanup on disconnect
+    res.on('close', () => {
+        cleanupSSEClient(res);
+    });
+
+    res.on('error', () => {
+        cleanupSSEClient(res);
+    });
 });
 
 export default router;
