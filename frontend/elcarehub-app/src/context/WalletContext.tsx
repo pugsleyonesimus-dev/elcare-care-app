@@ -1,9 +1,10 @@
 "use client";
 
-import { createContext, useContext, ReactNode, useMemo, useCallback } from "react";
+import { createContext, useContext, ReactNode, useMemo, useCallback, useEffect, useState } from "react";
 import { useWallet, WalletState, WalletStatus } from "@/hooks/useWallet";
 import { useMagicWallet, MagicWalletState } from "@/hooks/useMagicWallet";
 import { useLobstrWallet } from "@/hooks/useLobstrWallet";
+import { saveWalletProvider, loadWalletProvider, clearWalletProvider, WalletProvider } from "@/lib/wallet-persistence";
 
 export type WalletType = "freighter" | "lobstr" | "magic" | null;
 
@@ -26,6 +27,8 @@ export interface UnifiedWalletState {
   // Per-wallet connect helpers for the modal
   connectFreighter: () => Promise<void>;
   connectLobstr: () => Promise<void>;
+  connectMagicEmail: (email: string) => Promise<void>;
+  connectMagicPasskey: () => Promise<void>;
 }
 
 const WalletContext = createContext<UnifiedWalletState | null>(null);
@@ -34,6 +37,37 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const freighter = useWallet();
   const lobstr = useLobstrWallet();
   const magic = useMagicWallet();
+  const [initialized, setInitialized] = useState(false);
+
+  // Auto-reconnect on mount
+  useEffect(() => {
+    const reconnect = async () => {
+      const savedProvider = loadWalletProvider();
+      if (!savedProvider) {
+        setInitialized(true);
+        return;
+      }
+
+      try {
+        if (savedProvider === 'freighter' && freighter.isInstalled) {
+          await freighter.connect();
+        } else if (savedProvider === 'lobstr' && lobstr.isInstalled) {
+          await lobstr.connect();
+        } else if (savedProvider === 'magic') {
+          await magic.refresh();
+        } else {
+          clearWalletProvider();
+        }
+      } catch (err) {
+        console.error('Auto-reconnect failed:', err);
+        clearWalletProvider();
+      } finally {
+        setInitialized(true);
+      }
+    };
+
+    reconnect();
+  }, []); // Only on mount
 
   const walletType: WalletType = freighter.isConnected
     ? "freighter"
@@ -70,11 +104,34 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     lobstr.disconnect();
     // Magic logout is async; fire and forget
     if (magic.isConnected) magic.logout().catch(console.error);
+    clearWalletProvider();
   }, [freighter, lobstr, magic]);
 
   const refresh = useCallback(async () => {
     await Promise.all([freighter.refresh(), lobstr.refresh()]);
   }, [freighter, lobstr]);
+
+  // Wrapper to persist provider choice
+  const connectFreighterWithPersist = useCallback(async () => {
+    await freighter.connect();
+    if (freighter.isConnected) saveWalletProvider('freighter');
+  }, [freighter]);
+
+  const connectLobstrWithPersist = useCallback(async () => {
+    await lobstr.connect();
+    if (lobstr.isConnected) saveWalletProvider('lobstr');
+  }, [lobstr]);
+
+  // Magic connect wrappers
+  const connectMagicEmail = useCallback(async (email: string) => {
+    await magic.loginWithEmail(email);
+    if (magic.isConnected) saveWalletProvider('magic');
+  }, [magic]);
+
+  const connectMagicPasskey = useCallback(async () => {
+    await magic.loginWithPasskey();
+    if (magic.isConnected) saveWalletProvider('magic');
+  }, [magic]);
 
   const value = useMemo(
     () => ({
@@ -94,8 +151,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       freighter,
       lobstr,
       magic,
-      connectFreighter: freighter.connect,
-      connectLobstr: lobstr.connect,
+      connectFreighter: connectFreighterWithPersist,
+      connectLobstr: connectLobstrWithPersist,
+      connectMagicEmail,
+      connectMagicPasskey,
     }),
     [
       walletType,
@@ -108,6 +167,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       connect,
       disconnect,
       refresh,
+      connectFreighterWithPersist,
+      connectLobstrWithPersist,
+      connectMagicEmail,
+      connectMagicPasskey,
     ]
   );
 
