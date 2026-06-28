@@ -1,4 +1,4 @@
-﻿// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
 // components/Navbar.tsx — ELCARE-HUB Navigation (Redesigned)
 // ─────────────────────────────────────────────────────────────
 
@@ -7,18 +7,20 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useWalletContext } from "@/context/WalletContext";
-import { Wallet, Store, LayoutDashboard, Menu, X, AlertTriangle, LogOut, ShieldCheck, Tag, Inbox, Compass, User, Gavel, Settings, HelpCircle, Rocket } from "lucide-react";
+import { Wallet, Store, LayoutDashboard, Menu, X, AlertTriangle, LogOut, ShieldCheck, Tag, Inbox, Compass, User, Gavel, Settings, HelpCircle, Rocket, ChevronDown } from "lucide-react";
 import { ConnectWalletModal } from "./ConnectWalletModal";
+import { WalletMenu } from "./WalletMenu";
 
 export function Navbar() {
-  const { publicKey, isConnected, isConnecting, disconnect, isWrongNetwork, status } =
+  const { publicKey, isConnected, isConnecting, disconnect, isWrongNetwork, status, balance, isLoadingBalance } =
     useWalletContext();
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [showWalletMenu, setShowWalletMenu] = useState(false);
 
   const shortKey = publicKey
-    ? `${publicKey.slice(0, 4)}-${publicKey.slice(-4)}`
+    ? `${publicKey.slice(0, 4)}...${publicKey.slice(-4)}`
     : null;
 
   // Detect scroll for transparent → solid transition
@@ -159,17 +161,32 @@ export function Navbar() {
                   </div>
                 )}
 
-                <div className="relative group">
-                  <div className="flex items-center gap-2 pl-3 pr-1 py-1 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-colors cursor-pointer">
-                    <span className="text-xs font-mono text-white/90">{shortKey}</span>
-                    <button
-                      onClick={disconnect}
-                      title="Disconnect Wallet"
-                      className="p-1.5 rounded-lg text-white/40 hover:text-terracotta-400 transition-colors"
-                    >
-                      <LogOut size={14} />
-                    </button>
-                  </div>
+                <div className="relative">
+                  <button
+                    onClick={() => setShowWalletMenu(!showWalletMenu)}
+                    className="flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-colors cursor-pointer group"
+                  >
+                    <div className="flex flex-col items-end">
+                      <span className="text-[10px] font-bold text-white/40 uppercase tracking-tighter">Connected Address</span>
+                      <span className="text-xs font-mono text-white/90 leading-none">{shortKey}</span>
+                    </div>
+                    <div className="h-6 w-px bg-white/10 mx-1" />
+                    <ChevronDown size={14} className={`text-white/40 transition-transform duration-300 ${showWalletMenu ? "rotate-180" : ""}`} />
+                  </button>
+
+                  {showWalletMenu && (
+                    <div className="absolute top-full right-0 mt-3 w-64 animate-in fade-in slide-in-from-top-2 duration-300">
+                      <WalletMenu
+                        address={publicKey!}
+                        balance={balance}
+                        isLoadingBalance={isLoadingBalance}
+                        onDisconnect={() => {
+                          disconnect();
+                          setShowWalletMenu(false);
+                        }}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (
@@ -293,24 +310,15 @@ export function Navbar() {
             <div className="pt-6 border-t border-white/5">
               {isConnected ? (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-mono text-brand-300">{shortKey}</p>
-                    {isWrongNetwork && (
-                      <span className="flex items-center gap-1 text-[10px] font-bold text-terracotta-400 uppercase">
-                        <AlertTriangle size={12} /> Network Error
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    onClick={() => {
+                  <WalletMenu
+                    address={publicKey!}
+                    balance={balance}
+                    isLoadingBalance={isLoadingBalance}
+                    onDisconnect={() => {
                       disconnect();
                       setMobileOpen(false);
                     }}
-                    className="w-full flex items-center justify-center gap-2 rounded-xl border border-terracotta-500/30 bg-terracotta-500/10 py-3.5 text-sm font-bold text-terracotta-400 hover:bg-terracotta-500/20 transition-all"
-                  >
-                    <LogOut size={16} />
-                    Disconnect Wallet
-                  </button>
+                  />
                 </div>
               ) : (
                 <button

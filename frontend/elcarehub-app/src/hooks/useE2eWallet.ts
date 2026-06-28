@@ -21,6 +21,8 @@ function readStoredPassphrase(): string | null {
 /** Playwright-driven wallet for E2E — avoids the Freighter browser extension. */
 export function useE2eWallet(): WalletState {
   const [publicKey, setPublicKey] = useState<string | null>(null);
+  const [balance, setBalance] = useState<string | null>("100.0000000"); // Mock E2E balance
+  const [isLoadingBalance, setIsLoadingBalance] = useState(false);
   const [networkPassphrase, setNetworkPassphrase] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +81,8 @@ export function useE2eWallet(): WalletState {
 
   return {
     publicKey,
+    balance,
+    isLoadingBalance,
     networkPassphrase,
     status,
     isInstalled,

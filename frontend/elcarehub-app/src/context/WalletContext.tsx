@@ -10,6 +10,8 @@ export type WalletType = "freighter" | "lobstr" | "magic" | null;
 export interface UnifiedWalletState {
   walletType: WalletType;
   publicKey: string | null;
+  balance: string | null;
+  isLoadingBalance: boolean;
   isConnected: boolean;
   isConnecting: boolean;
   isWrongNetwork: boolean;
@@ -52,6 +54,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const publicKey =
     activeWallet?.publicKey ?? magic.publicAddress ?? null;
 
+  const balance = activeWallet?.balance ?? null;
+  const isLoadingBalance = activeWallet?.isLoadingBalance ?? false;
+
   const status: UnifiedWalletState["status"] = freighter.isConnected
     ? freighter.status
     : lobstr.isConnected
@@ -80,6 +85,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     () => ({
       walletType,
       publicKey,
+      balance,
+      isLoadingBalance,
       isConnected: freighter.isConnected || lobstr.isConnected || magic.isConnected,
       isConnecting:
         freighter.isConnecting || lobstr.isConnecting || magic.isConnecting,
@@ -100,6 +107,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     [
       walletType,
       publicKey,
+      balance,
+      isLoadingBalance,
       status,
       activeWallet,
       freighter,
