@@ -4,6 +4,7 @@ import prisma from '../db.js';
 import redis from '../redis.js';
 import { cacheMiddleware } from './cache-middleware.js';
 import { strictRateLimiter } from './rate-limit-middleware.js';
+import { etagMiddleware } from './etag-middleware.js';
 
 // SSE clients registry
 const sseClients: Response[] = [];
@@ -15,6 +16,8 @@ export function emitSSEEvent(event: any) {
 }
 
 const router = Router();
+
+router.use(etagMiddleware);
 
 const CACHE_TTL_SECONDS = parseInt(process.env.REDIS_CACHE_TTL_SECONDS || '30');
 

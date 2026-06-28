@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import routes from './api/routes.js';
@@ -33,6 +34,7 @@ app.use(cors({
         : true,
     credentials: true,
 }));
+app.use(compression());
 app.use(express.json());
 app.use(limiter);
 
