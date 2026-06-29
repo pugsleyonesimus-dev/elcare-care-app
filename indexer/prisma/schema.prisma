@@ -11,6 +11,26 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum ListingStatus {
+  Active
+  Sold
+  Cancelled
+  Auction
+}
+
+enum AuctionStatus {
+  Active
+  Finalized
+  Cancelled
+}
+
+enum OfferStatus {
+  Pending
+  Accepted
+  Rejected
+  Withdrawn
+}
+
 model SyncState {
   id               Int      @id @default(1)
   lastLedger       Int      @default(0)
@@ -19,52 +39,74 @@ model SyncState {
 }
 
 model Listing {
-  listingId       BigInt   @id
+  listingId       BigInt        @id
   artist          String
   owner           String?
-  price           Decimal  @db.Decimal(32, 7)
+  price           Decimal       @db.Decimal(32, 7)
   currency        String
   collection      String
   nftTokenId      BigInt
   token           String
-  status          String   // "Active", "Sold", "Cancelled", "Auction"
+  status          ListingStatus @default(Active)
   recipients      Json?
   createdAtLedger Int
   updatedAtLedger Int
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
   @@index([artist])
   @@index([status])
   @@index([updatedAtLedger])
+  @@index([status, updatedAtLedger])
+  @@index([artist, updatedAtLedger])
+  @@index([collection])
+  @@index([collection, status])
 }
 
 model Auction {
-  auctionId       BigInt   @id
+  auctionId       BigInt        @id
   creator         String
   collection      String
   nftTokenId      BigInt
   token           String
-  reservePrice    Decimal  @db.Decimal(32, 7)
-  highestBid      Decimal  @db.Decimal(32, 7)
+  reservePrice    Decimal       @db.Decimal(32, 7)
+  highestBid      Decimal       @db.Decimal(32, 7)
   highestBidder   String?
   endTime         BigInt
-  status          String   // "Active", "Finalized", "Cancelled"
+  status          AuctionStatus @default(Active)
   recipients      Json?
   createdAtLedger Int
   updatedAtLedger Int
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
   @@index([updatedAtLedger])
 }
 
 model Offer {
-  offerId         BigInt   @id
+  offerId         BigInt      @id
   listingId       BigInt
   offerer         String
-  amount          Decimal  @db.Decimal(32, 7)
+  amount          Decimal     @db.Decimal(32, 7)
   token           String
-  status          String   // "Pending", "Accepted", "Rejected", "Withdrawn"
+  status          OfferStatus @default(Pending)
   createdAtLedger Int
   updatedAtLedger Int
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
   @@index([listingId])
 }
 
+model Bid {
+  id              Int      @id @default(autoincrement())
+  auctionId       BigInt
+  bidder          String
+  amount          Decimal  @db.Decimal(32, 7)
+  ledgerSequence  Int
+  createdAt       DateTime @default(now())
+  @@index([auctionId])
+  @@index([bidder])
+  @@index([ledgerSequence])
+  @@unique([auctionId, ledgerSequence, bidder])
+}
 
 model MarketplaceEvent {
   id              Int      @id @default(autoincrement())

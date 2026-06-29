@@ -1,13 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   X,
   CreditCard,
   Wallet,
   Loader2,
+  CheckCircle2,
 } from "lucide-react";
-import { Listing, stroopsToXlm } from "@/lib/contract";
+import { Listing, stroopsToXlm, getProtocolFee } from "@/lib/contract";
+import { useSupportedTokens } from "@/hooks/useSupportedTokens";
+import { TokenConfig, getTokenConfigByAddress } from "@/config/tokens";
+import { resolveSupportedTokens, getDefaultSupportedToken } from "@/lib/token-support";
 import posthog from "posthog-js";
 
 interface CheckoutModalProps {
@@ -28,13 +32,53 @@ export function CheckoutModal({
   isBuyingCrypto,
 }: CheckoutModalProps) {
   const [method, setMethod] = useState<"crypto" | "fiat">("crypto");
+  const [selectedToken, setSelectedToken] = useState<TokenConfig | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [protocolFee, setProtocolFee] = useState(0);
+  const { tokens: allTokens, isLoading: loadingTokens, error: tokensError } = useSupportedTokens();
+  const [supportedTokens, setSupportedTokens] = useState<TokenConfig[]>([]);
 
-  if (!isOpen) return null;
+  useEffect(() => {
+    if (!isOpen) {
+      setConfirmed(false);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    const init = async () => {
+      if (allTokens.length > 0) {
+        const tokens = resolveSupportedTokens([]);
+        setSupportedTokens(tokens);
+        
+        const listingToken = getTokenConfigByAddress(listing.token);
+        const defaultToken = listingToken || getDefaultSupportedToken(tokens);
+        setSelectedToken(defaultToken);
+
+        const fee = await getProtocolFee();
+        setProtocolFee(fee);
+      }
+    };
+    if (isOpen) {
+      init();
+    }
+  }, [isOpen, allTokens, listing.token]);
+
+  if (!isOpen || !selectedToken) return null;
 
   const priceXlm = Number(stroopsToXlm(listing.price));
   const estimatedFiat = (priceXlm * 0.12).toFixed(2);
+  
+  // Calculate fee breakdown
+  const protocolFeeAmount = (priceXlm * protocolFee) / 10000;
+  const royaltyAmount = 0; // Placeholder for future royalty implementation
+  const totalAmount = priceXlm + protocolFeeAmount + royaltyAmount;
 
   const handleCryptoPurchase = async () => {
+    if (!confirmed) {
+      setConfirmed(true);
+      return;
+    }
+    
     const success = await onCryptoPurchase();
     if (success) {
       posthog.capture("Purchase Successful", {
@@ -44,6 +88,7 @@ export function CheckoutModal({
       });
       onPurchased?.();
       onClose();
+      setConfirmed(false);
     }
   };
 
@@ -68,19 +113,77 @@ export function CheckoutModal({
         </div>
 
         {/* Content */}
-        <div className="p-6">
-          <div className="mb-6 flex justify-between rounded-2xl bg-gray-50 p-4">
-            <div>
-              <p className="text-sm text-gray-500">Total Price</p>
-              <p className="font-display text-2xl font-bold text-gray-900">
-                {priceXlm} XLM
-              </p>
-            </div>
-            <div className="text-right">
-              <p className="text-sm text-gray-500">Estimated</p>
-              <p className="font-display text-xl font-bold text-brand-500">
-                ~${estimatedFiat}
-              </p>
+        <div className="p-6 space-y-6">
+          {/* Token Selection */}
+          <div className="space-y-3">
+            <h3 className="text-sm font-bold uppercase tracking-wider text-gray-500">
+              Payment Token
+            </h3>
+            {loadingTokens ? (
+              <div className="flex items-center gap-2 text-gray-400 text-sm">
+                <Loader2 className="animate-spin" size={16} />
+                Loading tokens...
+              </div>
+            ) : tokensError ? (
+              <div className="text-red-500 text-sm">{tokensError}</div>
+            ) : (
+              <div className="grid grid-cols-1 gap-2">
+                {supportedTokens.map((token) => (
+                  <button
+                    key={token.address}
+                    onClick={() => setSelectedToken(token)}
+                    className={`flex items-center justify-between p-4 rounded-2xl border-2 transition-all ${
+                      selectedToken.address === token.address
+                        ? "border-brand-500 bg-brand-50 text-brand-600"
+                        : "border-gray-100 hover:border-gray-200 text-gray-600"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center font-bold text-gray-700">
+                        {token.symbol.charAt(0)}
+                      </div>
+                      <div className="text-left">
+                        <p className="font-semibold">{token.symbol}</p>
+                        <p className="text-xs text-gray-400">{token.name}</p>
+                      </div>
+                    </div>
+                    {selectedToken.address === token.address && (
+                      <CheckCircle2 size={20} />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Fee Breakdown */}
+          <div className="space-y-3">
+            <h3 className="text-sm font-bold uppercase tracking-wider text-gray-500">
+              Breakdown
+            </h3>
+            <div className="rounded-2xl bg-gray-50 p-4 space-y-3">
+              <div className="flex justify-between items-center">
+                <span className="text-gray-600">Item Price</span>
+                <span className="font-semibold text-gray-900">{priceXlm} {selectedToken.symbol}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-600">Protocol Fee ({protocolFee / 100}%)</span>
+                <span className="font-semibold text-gray-900">{protocolFeeAmount.toFixed(7)} {selectedToken.symbol}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-600">Royalties</span>
+                <span className="font-semibold text-gray-900">{royaltyAmount.toFixed(7)} {selectedToken.symbol}</span>
+              </div>
+              <div className="border-t border-gray-200 pt-3 flex justify-between items-center">
+                <span className="font-bold text-gray-900">Total</span>
+                <span className="font-display text-xl font-bold text-brand-600">
+                  {totalAmount.toFixed(7)} {selectedToken.symbol}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-sm text-gray-500">Estimated</span>
+                <span className="text-sm font-semibold text-brand-500">~${estimatedFiat}</span>
+              </div>
             </div>
           </div>
 
@@ -112,16 +215,24 @@ export function CheckoutModal({
             <button
               onClick={handleCryptoPurchase}
               disabled={isBuyingCrypto}
-              className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-brand-500 py-4 font-bold text-white shadow-lg shadow-brand-500/20 hover:bg-brand-600 transition-all disabled:opacity-50"
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl bg-brand-500 py-5 font-bold text-white shadow-lg shadow-brand-500/20 hover:bg-brand-600 transition-all disabled:opacity-50"
             >
               {isBuyingCrypto ? (
                 <>
                   <Loader2 className="animate-spin" size={18} /> Processing...
                 </>
+              ) : confirmed ? (
+                "Confirm & Pay"
               ) : (
-                `Pay ${priceXlm} XLM`
+                `Pay ${priceXlm} ${selectedToken.symbol}`
               )}
             </button>
+            
+            {confirmed && (
+              <p className="text-center text-sm text-gray-500">
+                Click again to confirm and complete your purchase
+              </p>
+            )}
           </div>
         </div>
       </div>

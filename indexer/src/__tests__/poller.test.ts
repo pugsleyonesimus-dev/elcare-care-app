@@ -48,6 +48,9 @@ const mockPrisma = vi.hoisted(() => ({
     upsert: vi.fn().mockResolvedValue({}),
     update: vi.fn().mockResolvedValue({}),
   },
+  bid: {
+    upsert: vi.fn().mockResolvedValue({}),
+  },
   collection: {
     upsert: vi.fn().mockResolvedValue({}),
   },

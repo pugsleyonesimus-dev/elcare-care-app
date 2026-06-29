@@ -7,7 +7,7 @@
 import { useWalletContext } from "@/context/WalletContext";
 import { useIncomingOffers, useAcceptOffer, useRejectOffer } from "@/hooks/useOffers";
 import { stroopsToXlm, Offer, Listing } from "@/lib/contract";
-import { Inbox, Clock, CheckCircle, XCircle, MoreVertical, ArrowUpRight, History, Activity, TrendingUp, Loader2, User } from "lucide-react";
+import { Inbox, Clock, CheckCircle, XCircle, MoreVertical, ArrowUpRight, History, Activity, TrendingUp, Loader2, User, Tag, CalendarClock } from "lucide-react";
 import { WalletGuard } from "@/components/WalletGuard";
 import { SUPPORTED_TOKENS } from "@/config/tokens";
 import { clsx } from "clsx";
@@ -73,8 +73,21 @@ export default function IncomingOffersPage() {
             </div>
           </div>
 
+          {/* Cross-Navigation Link */}
+          <div className="mb-8 flex justify-end">
+            <Link
+              href="/offers"
+              data-testid="nav-outgoing"
+              className="inline-flex items-center gap-2 rounded-2xl bg-white/5 border border-white/10 px-6 py-3 text-sm font-bold text-white/60 hover:text-brand-400 hover:border-brand-500/30 hover:bg-white/[0.07] transition-all duration-300"
+            >
+              <Tag size={16} />
+              View My Offers
+              <ArrowUpRight size={14} className="opacity-50" />
+            </Link>
+          </div>
+
           {/* Stats Metrics Area */}
-          <div className="mb-12 grid gap-6 sm:grid-cols-3">
+          <div className="mb-12 grid gap-6 sm:grid-cols-3" data-testid="stats-grid">
             {[
               { label: "Total Received", value: allOffers.length, icon: History, color: "brand" },
               { label: "Needs Review", value: pendingCnt, icon: Activity, color: "mint" },
@@ -171,12 +184,19 @@ export default function IncomingOffersPage() {
                         <Activity size={14} className="text-mint-500/40" />
                         {group.offers.length} offer{group.offers.length !== 1 ? "s" : ""} received
                       </div>
+                      {group.listing.expires_at && (
+                        <div className="flex items-center gap-2 text-white/30 text-xs font-bold" data-testid={`listing-expiry-${group.listing.listing_id}`}>
+                          <CalendarClock size={13} className="text-white/20" />
+                          <span className="text-[10px] uppercase tracking-widest">Expires:</span>
+                          <span className="text-white/40">{new Date(group.listing.expires_at * 1000).toLocaleDateString()}</span>
+                        </div>
+                      )}
                     </div>
 
                     {/* Offers Grid for this Listing */}
-                    <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                    <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3" data-testid={`offers-grid-${group.listing.listing_id}`}>
                       {group.offers.map((o) => (
-                        <div key={o.offer_id} className="group relative flex flex-col rounded-[2.5rem] bg-white/[0.03] hover:bg-white/[0.07] hover:border-white/10 transition-all duration-500 border border-white/5 p-6 shadow-2xl overflow-hidden min-h-[320px]">
+                        <div key={o.offer_id} data-testid={`offer-card-${o.offer_id}`} className="group relative flex flex-col rounded-[2.5rem] bg-white/[0.03] hover:bg-white/[0.07] hover:border-white/10 transition-all duration-500 border border-white/5 p-6 shadow-2xl overflow-hidden min-h-[320px]">
                           {/* BG Tribal Accent */}
                           <div className="absolute -top-10 -right-10 tribal-pattern opacity-[0.02] scale-50 group-hover:scale-75 transition-transform duration-1000" />
 
@@ -217,6 +237,7 @@ export default function IncomingOffersPage() {
                             {o.status === "Pending" && (
                               <div className="grid grid-cols-2 gap-3">
                                 <button
+                                  data-testid={`accept-btn-${o.offer_id}`}
                                   onClick={async () => {
                                     const ok = await accept(o.offer_id);
                                     if (ok) refresh();
@@ -232,6 +253,7 @@ export default function IncomingOffersPage() {
                                   )}
                                 </button>
                                 <button
+                                  data-testid={`reject-btn-${o.offer_id}`}
                                   onClick={async () => {
                                     const ok = await reject(o.offer_id);
                                     if (ok) refresh();

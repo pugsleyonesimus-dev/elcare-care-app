@@ -7,10 +7,13 @@ import {
   syncLatencyGauge,
   metricsMiddleware,
   handleMetrics,
+  requestLogger,
+  httpRequestDurationMicroseconds,
 } from '../metrics';
 
 // We can construct a minimal Express app to verify the middleware and handler
 const app = express();
+app.use(requestLogger);
 app.use(metricsMiddleware);
 app.get('/metrics', handleMetrics);
 app.get('/test', (req, res) => {

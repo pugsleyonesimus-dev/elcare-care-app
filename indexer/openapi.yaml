@@ -1,0 +1,513 @@
+openapi: 3.0.0
+info:
+  title: ElcareHub Indexer API
+  description: Off-chain event indexer for the ElcareHub NFT marketplace on Stellar Soroban
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:4000
+    description: Local development
+  - url: https://indexer.elcarehub.io
+    description: Production
+
+paths:
+  /listings:
+    get:
+      summary: Get all listings
+      tags: [Listings]
+      parameters:
+        - name: artist
+          in: query
+          schema:
+            type: string
+          description: Filter by artist address
+        - name: owner
+          in: query
+          schema:
+            type: string
+          description: Filter by current owner address
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [Active, Sold, Cancelled]
+          description: Filter by listing status
+        - name: minPrice
+          in: query
+          schema:
+            type: string
+          description: Minimum price filter
+        - name: maxPrice
+          in: query
+          schema:
+            type: string
+          description: Maximum price filter
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Search by artist address or collection
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            maximum: 1000
+          description: Number of results to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+          description: Number of results to skip
+      responses:
+        '200':
+          description: List of listings
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/Listing'
+                  - type: object
+                    properties:
+                      listings:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Listing'
+                      total:
+                        type: integer
+
+  /listings/{id}:
+    get:
+      summary: Get a single listing
+      tags: [Listings]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Listing details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Listing'
+        '404':
+          description: Listing not found
+
+  /listings/{id}/history:
+    get:
+      summary: Get listing event history
+      tags: [Listings]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Event timeline
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MarketplaceEvent'
+
+  /auctions:
+    get:
+      summary: Get all auctions
+      tags: [Auctions]
+      parameters:
+        - name: creator
+          in: query
+          schema:
+            type: string
+          description: Filter by auction creator address
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [Active, Finalized, Cancelled]
+          description: Filter by auction status
+      responses:
+        '200':
+          description: List of auctions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Auction'
+
+  /auctions/{id}:
+    get:
+      summary: Get a single auction
+      tags: [Auctions]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Auction details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Auction'
+        '404':
+          description: Auction not found
+
+  /offers:
+    get:
+      summary: Get all offers
+      tags: [Offers]
+      parameters:
+        - name: listing_id
+          in: query
+          schema:
+            type: string
+          description: Filter by listing ID
+      responses:
+        '200':
+          description: List of offers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Offer'
+
+  /activity/recent:
+    get:
+      summary: Get recent marketplace activity
+      tags: [Activity]
+      responses:
+        '200':
+          description: Recent events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MarketplaceEvent'
+
+  /collections:
+    get:
+      summary: Get all collections
+      tags: [Collections]
+      parameters:
+        - name: kind
+          in: query
+          schema:
+            type: string
+            enum: [ERC721, ERC1155, LazyMintERC721, LazyMintERC1155]
+          description: Filter by collection type
+        - name: creator
+          in: query
+          schema:
+            type: string
+          description: Filter by creator address
+      responses:
+        '200':
+          description: List of collections
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Collection'
+
+  /creators/{address}/collections:
+    get:
+      summary: Get collections by creator
+      tags: [Collections]
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Collections by creator
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Collection'
+
+  /wallets/{address}/activity:
+    get:
+      summary: Get wallet activity
+      tags: [Wallets]
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Wallet events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MarketplaceEvent'
+
+  /wallets/{address}/royalty-stats:
+    get:
+      summary: Get royalty earnings for an artist
+      tags: [Wallets]
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Royalty statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoyaltyStats'
+
+  /stats:
+    get:
+      summary: Get marketplace statistics
+      tags: [Stats]
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Start date (ISO 8601)
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: End date (ISO 8601)
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [day, week, month]
+          description: Shorthand time range
+      responses:
+        '200':
+          description: Marketplace statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Stats'
+
+  /health:
+    get:
+      summary: Health check
+      tags: [System]
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+
+  /readyz:
+    get:
+      summary: Readiness probe
+      tags: [System]
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ready]
+                  lastLedger:
+                    type: integer
+        '503':
+          description: Service is not ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [not_ready]
+                  reasons:
+                    type: array
+                    items:
+                      type: string
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      tags: [System]
+      responses:
+        '200':
+          description: Prometheus-format metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  schemas:
+    Listing:
+      type: object
+      properties:
+        listingId:
+          type: string
+        artist:
+          type: string
+        owner:
+          type: string
+          nullable: true
+        price:
+          type: string
+        currency:
+          type: string
+        metadataCid:
+          type: string
+        status:
+          type: string
+          enum: [Active, Sold, Cancelled]
+        royaltyBps:
+          type: integer
+        updatedAtLedger:
+          type: integer
+
+    Auction:
+      type: object
+      properties:
+        auctionId:
+          type: string
+        creator:
+          type: string
+        reservePrice:
+          type: string
+        minBidIncrement:
+          type: string
+        endLedger:
+          type: integer
+        highestBidder:
+          type: string
+          nullable: true
+        highestBid:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [Active, Finalized, Cancelled]
+        updatedAtLedger:
+          type: integer
+
+    Offer:
+      type: object
+      properties:
+        offerId:
+          type: string
+        listingId:
+          type: string
+        offerer:
+          type: string
+        offerPrice:
+          type: string
+        status:
+          type: string
+          enum: [Pending, Accepted, Rejected, Withdrawn]
+        updatedAtLedger:
+          type: integer
+
+    MarketplaceEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        eventType:
+          type: string
+        actor:
+          type: string
+        ledgerSequence:
+          type: integer
+        ledgerTimestamp:
+          type: string
+          format: date-time
+        data:
+          type: object
+
+    Collection:
+      type: object
+      properties:
+        collectionId:
+          type: string
+        creator:
+          type: string
+        kind:
+          type: string
+          enum: [ERC721, ERC1155, LazyMintERC721, LazyMintERC1155]
+        deployedAtLedger:
+          type: integer
+
+    RoyaltyStats:
+      type: object
+      properties:
+        totalEarned:
+          type: string
+        payoutCount:
+          type: integer
+        lastPayout:
+          type: integer
+
+    Stats:
+      type: object
+      properties:
+        totalListings:
+          type: integer
+        activeListings:
+          type: integer
+        totalVolume:
+          type: string
+        activeUsers:
+          type: integer
+        totalEvents:
+          type: integer
+        totalSales:
+          type: integer
+        timeRange:
+          type: object
+          nullable: true
+          properties:
+            from:
+              type: string
+              format: date-time
+            to:
+              type: string
+              format: date-time

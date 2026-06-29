@@ -115,6 +115,10 @@ npm run backfill -- --start=123456 --end=124999 --rpc=https://your-archival-rpc
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DATABASE_URL` | ✅ | — | PostgreSQL connection string |
+| `DB_CONNECTION_LIMIT` | ⬜ | `10` | Max connections in pool. Recommended: 10-20 for single instance, up to 50 for high-traffic production |
+| `DB_STATEMENT_TIMEOUT` | ⬜ | `30000` | Max query execution time (ms). Recommended: 30000 for typical queries, 10000 for strict SLA |
+| `DB_IDLE_TIMEOUT` | ⬜ | `30000` | Connection idle timeout (ms). Recommended: 30000 |
+| `DB_ACQUIRE_TIMEOUT` | ⬜ | `10000` | Max time to acquire connection from pool (ms). Increase if seeing "too many clients" errors under peak load |
 | `MARKETPLACE_CONTRACT_ID` | ✅ | — | Soroban marketplace contract address |
 | `LAUNCHPAD_CONTRACT_ID` | ✅ | — | Launchpad factory contract address |
 | `REDIS_URL` | ✅ | `redis://localhost:6379` | Redis connection string |
