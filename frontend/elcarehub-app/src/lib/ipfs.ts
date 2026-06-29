@@ -79,6 +79,41 @@ export async function uploadMetadataToIPFS(
   };
 }
 
+// ── Public fallback IPFS gateways ──────────────────────────────
+
+export const DEFAULT_FALLBACK_GATEWAYS = [
+  "https://ipfs.io",
+  "https://cloudflare-ipfs.com",
+  "https://dweb.link",
+];
+
+/** Normalizes an IPFS URI to a clean CID. Strips `ipfs://` prefix. Passes full HTTP URLs through unchanged. */
+export function normalizeIpfsUri(uri: string): string {
+  if (uri.startsWith("http")) return uri;
+  return uri.replace("ipfs://", "").trim();
+}
+
+/**
+ * Returns an ordered list of gateway URLs for a given CID.
+ * The configured primary gateway comes first, followed by public fallbacks.
+ * Deduplicates gateways so the same URL is never tried twice.
+ */
+export function getGatewayUrls(
+  cid: string,
+  primaryGateway?: string
+): string[] {
+  const clean = normalizeIpfsUri(cid);
+  if (clean.startsWith("http")) return [clean];
+
+  const primary = primaryGateway ?? config.pinataGateway;
+  const seen = new Set<string>();
+  return [primary, ...DEFAULT_FALLBACK_GATEWAYS].filter((gw) => {
+    if (seen.has(gw)) return false;
+    seen.add(gw);
+    return true;
+  }).map((gw) => `${gw.replace(/\/$/, "")}/ipfs/${clean}`);
+}
+
 // ── Fetch metadata ────────────────────────────────────────────
 
 /**
@@ -89,17 +124,23 @@ export async function fetchMetadata(cid?: string): Promise<ArtworkMetadata> {
   if (!cid) {
     return { title: "Unknown Artwork", description: "", artist: "Unknown", image: "", year: "", category: "" };
   }
-  const cleanCid = cid.replace("ipfs://", "").trim();
-  const url = `${config.pinataGateway}/ipfs/${cleanCid}`;
-  const res = await axios.get<ArtworkMetadata>(url);
-  return res.data;
+  const cleanCid = normalizeIpfsUri(cid);
+  const urls = getGatewayUrls(cleanCid);
+  let lastError: unknown;
+  for (const url of urls) {
+    try {
+      const res = await axios.get<ArtworkMetadata>(url);
+      return res.data;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
 }
 
 // ── Utility ───────────────────────────────────────────────────
 
 /** Converts a raw CID string or an IPFS URI to an IPFS gateway URL for image display. Handles full URLs gracefully. */
 export function cidToGatewayUrl(cid: string): string {
-  if (cid.startsWith("http")) return cid;
-  const cleanCid = cid.replace("ipfs://", "").trim();
-  return `${config.pinataGateway}/ipfs/${cleanCid}`;
+  return getGatewayUrls(cid)[0];
 }
