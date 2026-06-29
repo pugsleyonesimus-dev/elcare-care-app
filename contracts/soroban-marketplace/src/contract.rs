@@ -63,6 +63,14 @@ const MIN_AUCTION_DURATION: u64 = 3_600; // 1 hour
 /// fallback.
 const BID_HISTORY_CAP: u32 = 20;
 
+/// Maximum number of active (Pending) offers allowed per listing.
+///
+/// When this cap is reached, subsequent `make_offer` calls revert with
+/// `OfferLimitReached`.  Offers that reach a terminal state (Accepted,
+/// Rejected, Withdrawn) no longer count toward the cap, freeing capacity for
+/// new offers.
+const MAX_OFFERS_PER_LISTING: u32 = 50;
+
 #[contract]
 pub struct MarketplaceContract;
 
@@ -1281,6 +1289,20 @@ impl MarketplaceContract {
         // giving the offerer immediate feedback instead of a failed purchase later.
         if !Self::is_token_whitelisted(&env, &token) {
             panic_with_error!(&env, MarketplaceError::TokenNotWhitelisted);
+        }
+        // Enforce the active-offer cap so per-listing storage is bounded.
+        // Only Pending offers count; terminal offers have freed their slot.
+        let listing_offer_ids = load_listing_offers(&env, listing_id);
+        let mut active_offers: u32 = 0;
+        for oid in listing_offer_ids.iter() {
+            if let Some(offer) = load_offer(&env, oid) {
+                if offer.status == OfferStatus::Pending {
+                    active_offers += 1;
+                }
+            }
+        }
+        if active_offers >= MAX_OFFERS_PER_LISTING {
+            panic_with_error!(&env, MarketplaceError::OfferLimitReached);
         }
         TokenClient::new(&env, &token).transfer(&offerer, &env.current_contract_address(), &amount);
         let offer_id = increment_offer_count(&env);

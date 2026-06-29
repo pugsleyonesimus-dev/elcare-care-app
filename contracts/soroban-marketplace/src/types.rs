@@ -60,6 +60,10 @@ pub enum MarketplaceError {
     /// `accept_offer` called after the offer's `expires_at` has passed; or
     /// `reclaim_offer` called before expiry / on a non-expiring offer.
     OfferExpired = 34,
+    /// A new offer would exceed MAX_OFFERS_PER_LISTING active (Pending) offers
+    /// for this listing.  A cap bounds per-listing storage growth and keeps the
+    /// auto-reject sweep (ISSUE-031) economically viable.
+    OfferLimitReached = 35,
 }
 
 #[contracttype]

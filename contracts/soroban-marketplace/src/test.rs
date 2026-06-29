@@ -1284,6 +1284,122 @@ fn test_make_offer_on_nonexistent_listing_fails() {
     client.make_offer(&buyer, &999u64, &5_000_000_i128, &token_id, &None);
 }
 
+const MAX_OFFERS_PER_LISTING: u32 = 50;
+
+#[test]
+fn test_make_offer_at_max_offers_succeeds() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    let listing_id = create_test_listing(&env, &client, &artist, &token_id);
+
+    // Creating MAX_OFFERS_PER_LISTING offers should all succeed
+    for i in 0..MAX_OFFERS_PER_LISTING {
+        let offer_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
+        assert_eq!(offer_id, (i as u64) + 1);
+    }
+
+    let offers = client.get_offers_by_listing(&listing_id);
+    assert_eq!(offers.len(), MAX_OFFERS_PER_LISTING as u32);
+    for offer in offers.iter() {
+        assert_eq!(offer.status, OfferStatus::Pending);
+    }
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #35)")]
+fn test_make_offer_exceeds_max_offers_fails() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    let listing_id = create_test_listing(&env, &client, &artist, &token_id);
+
+    // Fill to the cap
+    for _ in 0..MAX_OFFERS_PER_LISTING {
+        client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
+    }
+
+    // One more should hit the cap
+    client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
+}
+
+#[test]
+fn test_withdrawn_offer_frees_capacity() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    let listing_id = create_test_listing(&env, &client, &artist, &token_id);
+
+    // Make the first offer and remember its ID
+    let first_oid = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
+
+    // Fill the rest of the capacity
+    for _ in 1..MAX_OFFERS_PER_LISTING {
+        client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
+    }
+
+    // Withdraw the first offer — it transitions to Withdrawn (terminal)
+    client.withdraw_offer(&buyer, &first_oid);
+
+    // Now a new offer should succeed (capacity freed)
+    let new_oid = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
+    assert!(new_oid > 0);
+    let new_offer = client.get_offer(&new_oid);
+    assert_eq!(new_offer.status, OfferStatus::Pending);
+}
+
+#[test]
+fn test_rejected_offer_frees_capacity() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    let listing_id = create_test_listing(&env, &client, &artist, &token_id);
+
+    // Make the first offer and remember its ID
+    let first_oid = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
+
+    // Fill the rest of the capacity
+    for _ in 1..MAX_OFFERS_PER_LISTING {
+        client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
+    }
+
+    // Reject the first offer — it transitions to Rejected (terminal)
+    client.reject_offer(&artist, &first_oid);
+
+    // Now a new offer should succeed
+    let new_oid = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
+    assert!(new_oid > 0);
+    let new_offer = client.get_offer(&new_oid);
+    assert_eq!(new_offer.status, OfferStatus::Pending);
+}
+
+#[test]
+fn test_make_offer_fills_multiple_capacities_after_reject() {
+    let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
+    client.set_admin(&artist);
+    client.add_token_to_whitelist(&token_id);
+    let listing_id = create_test_listing(&env, &client, &artist, &token_id);
+
+    // Fill to the cap
+    for _ in 0..MAX_OFFERS_PER_LISTING {
+        client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
+    }
+
+    // Reject the first (oldest) offer
+    let offers = client.get_offers_by_listing(&listing_id);
+    let first_id = offers.get(0).unwrap().offer_id;
+    client.reject_offer(&artist, &first_id);
+
+    // Fill again (should succeed — we freed one slot)
+    let refill_id = client.make_offer(&buyer, &listing_id, &5_000_000_i128, &token_id, &None);
+    assert!(refill_id > 0);
+
+    // Verify we are at the cap again
+    let offers = client.get_offers_by_listing(&listing_id);
+    let pending_count = offers.iter().filter(|o| o.status == OfferStatus::Pending).count();
+    assert_eq!(pending_count, MAX_OFFERS_PER_LISTING as usize);
+}
+
 #[test]
 fn test_withdraw_offer_success() {
     let (env, client, artist, buyer, token_id, _contract_id, collection_id) = setup();
