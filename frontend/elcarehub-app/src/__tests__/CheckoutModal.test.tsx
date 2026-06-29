@@ -16,6 +16,25 @@ jest.mock('lucide-react', () =>
   )
 );
 
+// Mock the hooks
+jest.mock('@/hooks/useSupportedTokens', () => ({
+  useSupportedTokens: () => ({
+    tokens: [
+      { symbol: 'XLM', name: 'Stellar Lumens', address: 'test-xlm-address', decimals: 7 },
+      { symbol: 'USDC', name: 'USD Coin', address: 'test-usdc-address', decimals: 7 },
+    ],
+    isLoading: false,
+    error: null,
+    refresh: jest.fn(),
+  }),
+}));
+
+// Mock the contract functions
+jest.mock('@/lib/contract', () => ({
+  ...jest.requireActual('@/lib/contract'),
+  getProtocolFee: jest.fn().mockResolvedValue(250), // 2.5% fee
+}));
+
 // Stub out the fiat relay fetch so we control its response
 const mockFetch = jest.fn();
 globalThis.fetch = mockFetch;
@@ -28,6 +47,7 @@ const sampleListing = {
   metadata_cid: 'QmTest',
   status: 'Active',
   artist: 'GARTIST',
+  token: 'test-xlm-address',
 } as any;
 
 describe('CheckoutModal', () => {
@@ -117,7 +137,7 @@ describe('CheckoutModal', () => {
 
   // ── Crypto flow ─────────────────────────────────────────────────────────────
 
-  it('calls onCryptoPurchase and onClose on successful crypto purchase', async () => {
+  it('requires confirmation before calling onCryptoPurchase', async () => {
     const onClose = jest.fn();
     const onPurchased = jest.fn();
     const onCryptoPurchase = jest.fn().mockResolvedValue(true);
@@ -134,7 +154,14 @@ describe('CheckoutModal', () => {
       />
     );
 
+    // First click should only set confirmed to true
     await user.click(screen.getByRole('button', { name: /pay.*xlm/i }));
+    expect(onCryptoPurchase).not.toHaveBeenCalled();
+    expect(screen.getByText(/confirm & pay/i)).toBeInTheDocument();
+    expect(screen.getByText(/click again to confirm/i)).toBeInTheDocument();
+
+    // Second click should call onCryptoPurchase
+    await user.click(screen.getByRole('button', { name: /confirm & pay/i }));
     await waitFor(() => expect(onCryptoPurchase).toHaveBeenCalled());
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(onPurchased).toHaveBeenCalled();
@@ -155,7 +182,10 @@ describe('CheckoutModal', () => {
       />
     );
 
+    // Click twice to confirm and attempt purchase
     await user.click(screen.getByRole('button', { name: /pay.*xlm/i }));
+    await user.click(screen.getByRole('button', { name: /confirm & pay/i }));
+    
     await waitFor(() => expect(onCryptoPurchase).toHaveBeenCalled());
     expect(onClose).not.toHaveBeenCalled();
   });
@@ -174,5 +204,42 @@ describe('CheckoutModal', () => {
     expect(screen.getByRole('button', { name: /processing/i })).toBeDisabled();
   });
 
+  // ── New features tests ──────────────────────────────────────────────────────
+
+  it('displays token selection options', () => {
+    render(
+      <CheckoutModal
+        isOpen={true}
+        onClose={jest.fn()}
+        listing={sampleListing}
+        onCryptoPurchase={jest.fn()}
+        isBuyingCrypto={false}
+      />
+    );
+
+    expect(screen.getByText(/payment token/i)).toBeInTheDocument();
+    expect(screen.getByText(/XLM/i)).toBeInTheDocument();
+    expect(screen.getByText(/Stellar Lumens/i)).toBeInTheDocument();
+    expect(screen.getByText(/USDC/i)).toBeInTheDocument();
+    expect(screen.getByText(/USD Coin/i)).toBeInTheDocument();
+  });
+
+  it('displays fee breakdown', () => {
+    render(
+      <CheckoutModal
+        isOpen={true}
+        onClose={jest.fn()}
+        listing={sampleListing}
+        onCryptoPurchase={jest.fn()}
+        isBuyingCrypto={false}
+      />
+    );
+
+    expect(screen.getByText(/breakdown/i)).toBeInTheDocument();
+    expect(screen.getByText(/item price/i)).toBeInTheDocument();
+    expect(screen.getByText(/protocol fee/i)).toBeInTheDocument();
+    expect(screen.getByText(/royalties/i)).toBeInTheDocument();
+    expect(screen.getByText(/total/i)).toBeInTheDocument();
+  });
 
 });

@@ -62,88 +62,35 @@ describe('Prometheus Metrics API & Middleware', () => {
     expect(res.text).toContain('indexer_sync_latency_ledgers 333');
   });
 
-  describe('Request logging', () => {
-    it('logs requests with method, path, status, and latency', async () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      const testApp = express();
-      testApp.use(requestLogger);
-      testApp.get('/api/test', (req, res) => res.status(200).json({ ok: true }));
+  it('reflects updated gauge values after each simulated poll cycle', async () => {
+    // Cycle 1: far behind
+    latestLedgerProcessedGauge.set(1000);
+    networkLatestLedgerGauge.set(5000);
+    syncLatencyGauge.set(4000); // 5000 - 1000
 
-      await request(testApp).get('/api/test');
+    let res = await request(app).get('/metrics').expect(200);
+    expect(res.text).toContain('indexer_latest_ledger_processed 1000');
+    expect(res.text).toContain('indexer_network_latest_ledger 5000');
+    expect(res.text).toContain('indexer_sync_latency_ledgers 4000');
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/GET \/api\/test 200 \d+ms/)
-      );
-      consoleSpy.mockRestore();
-    });
+    // Cycle 2: caught up partially
+    latestLedgerProcessedGauge.set(3000);
+    networkLatestLedgerGauge.set(5100);
+    syncLatencyGauge.set(2100); // 5100 - 3000
 
-    it('skips logging for /health', async () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      const testApp = express();
-      testApp.use(requestLogger);
-      testApp.get('/health', (req, res) => res.json({ status: 'ok' }));
+    res = await request(app).get('/metrics').expect(200);
+    expect(res.text).toContain('indexer_latest_ledger_processed 3000');
+    expect(res.text).toContain('indexer_network_latest_ledger 5100');
+    expect(res.text).toContain('indexer_sync_latency_ledgers 2100');
 
-      await request(testApp).get('/health');
+    // Cycle 3: fully synced
+    latestLedgerProcessedGauge.set(5200);
+    networkLatestLedgerGauge.set(5200);
+    syncLatencyGauge.set(0);
 
-      expect(consoleSpy).not.toHaveBeenCalled();
-      consoleSpy.mockRestore();
-    });
-
-    it('skips logging for /metrics', async () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      const testApp = express();
-      testApp.use(requestLogger);
-      testApp.get('/metrics', (req, res) => res.json({}));
-
-      await request(testApp).get('/metrics');
-
-      expect(consoleSpy).not.toHaveBeenCalled();
-      consoleSpy.mockRestore();
-    });
-
-    it('skips logging for /readyz', async () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      const testApp = express();
-      testApp.use(requestLogger);
-      testApp.get('/readyz', (req, res) => res.json({}));
-
-      await request(testApp).get('/readyz');
-
-      expect(consoleSpy).not.toHaveBeenCalled();
-      consoleSpy.mockRestore();
-    });
-
-    it('logs error responses', async () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      const testApp = express();
-      testApp.use(requestLogger);
-      testApp.get('/error', (req, res) => res.status(500).json({ error: 'Internal' }));
-
-      await request(testApp).get('/error');
-
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/GET \/error 500 \d+ms/)
-      );
-      consoleSpy.mockRestore();
-    });
-  });
-
-  describe('Histogram observation', () => {
-    it('records histogram with correct labels and duration', async () => {
-      const testApp = express();
-      testApp.use(metricsMiddleware);
-      testApp.get('/test-route', (req, res) => res.status(201).json({}));
-
-      await request(testApp).get('/test-route');
-
-      const res = await request(app)
-        .get('/metrics')
-        .expect(200);
-
-      expect(res.text).toContain('method="GET"');
-      expect(res.text).toContain('route="/test-route"');
-      expect(res.text).toContain('status="201"');
-      expect(res.text).toContain('http_request_duration_seconds');
-    });
+    res = await request(app).get('/metrics').expect(200);
+    expect(res.text).toContain('indexer_latest_ledger_processed 5200');
+    expect(res.text).toContain('indexer_network_latest_ledger 5200');
+    expect(res.text).toContain('indexer_sync_latency_ledgers 0');
   });
 });

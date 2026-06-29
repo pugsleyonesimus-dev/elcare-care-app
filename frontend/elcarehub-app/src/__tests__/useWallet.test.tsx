@@ -41,6 +41,8 @@ jest.mock('@/lib/e2e-chain-mock', () => ({
 jest.mock('@/hooks/useE2eWallet', () => ({
   useE2eWallet: () => ({
     publicKey: null,
+    balance: null,
+    isLoadingBalance: false,
     networkPassphrase: null,
     status: 'DISCONNECTED',
     isInstalled: false,

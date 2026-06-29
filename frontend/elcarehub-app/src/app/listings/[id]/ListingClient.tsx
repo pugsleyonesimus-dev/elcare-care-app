@@ -22,6 +22,8 @@ import { useBuyArtwork } from "@/hooks/useMarketplace";
 import { usePlaceBid } from "@/hooks/usePlaceBid";
 import { useListingOffers, useMakeOffer } from "@/hooks/useOffers";
 import { useListingActivity } from "@/hooks/useUserActivity";
+import { useListingHistory } from "@/hooks/useListingHistory";
+import { ProvenanceTimeline } from "@/components/ProvenanceTimeline";
 import { GuardButton } from "@/components/WalletGuard";
 import {
     ArrowLeft,
@@ -29,7 +31,6 @@ import {
     ShoppingCart,
     User,
     Calendar,
-    Tag,
     Hash,
     Clock,
     Gavel,
@@ -38,7 +39,6 @@ import {
     CheckCircle2,
     AlertCircle,
     TrendingUp,
-    Landmark,
     Share2,
     Copy,
     Check,
@@ -67,7 +67,9 @@ export default function ListingDetailPage({ id }: ListingClientProps) {
     const { buy, isBuying, error: buyError } = useBuyArtwork(publicKey);
     const { bid, isBidding, error: bidError } = usePlaceBid(publicKey);
     const { offers, isLoading: isLoadingOffers, refresh: refreshOffers } = useListingOffers(id ? Number(id) : null);
-    const { activities, isLoading: isLoadingActivity } = useListingActivity(id ? Number(id) : null);
+    // Keep useListingActivity call for existing mocks/consumers; history is now handled by useListingHistory
+    useListingActivity(id ? Number(id) : null);
+    const { events: historyEvents, isLoading: isLoadingHistory, isLoadingMore, error: historyError, hasMore, loadMore } = useListingHistory(id ? Number(id) : null);
 
     // Make Offer Hook and States
     const { make: makeOffer, isOffering, error: offerError } = useMakeOffer(publicKey);
@@ -253,8 +255,8 @@ export default function ListingDetailPage({ id }: ListingClientProps) {
                     </div>
 
                     {/* Description & Metadata Tabs */}
-                    <div id="listing-tabs" className="rounded-3xl bg-white/5 border border-white/5 p-8 backdrop-blur-sm">
-                        <div className="flex gap-8 border-b border-white/5 mb-8">
+                    <div id="listing-tabs" className="rounded-3xl bg-white/5 border border-white/5 p-6 md:p-8 backdrop-blur-sm">
+                        <div className="flex gap-6 md:gap-8 border-b border-white/5 mb-6 md:mb-8">
                             {(['details', 'history', 'offers'] as const).map((tab) => (
                                 <button
                                     key={tab}
@@ -276,7 +278,7 @@ export default function ListingDetailPage({ id }: ListingClientProps) {
                                     {metadata?.description || "No description provided by the artist."}
                                 </p>
 
-                                <div className="grid grid-cols-2 gap-6 pt-4">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-4">
                                     <div className="space-y-1">
                                         <span className="text-[10px] uppercase tracking-widest text-white/30 font-bold">Artist</span>
                                         <div className="flex items-center gap-2 group cursor-pointer">
@@ -331,41 +333,15 @@ export default function ListingDetailPage({ id }: ListingClientProps) {
                         )}
 
                         {activeTab === 'history' && (
-                            <div className="space-y-6 animate-fade-in max-h-80 overflow-y-auto pr-4 custom-scrollbar">
-                                {activities.length > 0 ? (
-                                    activities.map((evt, idx) => (
-                                        <div key={evt.id} className="flex gap-4 relative">
-                                            {idx !== activities.length - 1 && (
-                                                <div className="absolute left-[15px] top-8 bottom-[-24px] w-px bg-white/10" />
-                                            )}
-                                            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 z-10 ${evt.type === 'LISTED' ? 'bg-white/10 text-white' :
-                                                evt.type === 'PURCHASE' || evt.type === 'SALE' ? 'bg-mint-500/20 text-mint-400' :
-                                                    'bg-brand-500/20 text-brand-400'
-                                                }`}>
-                                                {evt.type === 'LISTED' && <Tag size={14} />}
-                                                {(evt.type === 'PURCHASE' || evt.type === 'SALE') && <ShoppingCart size={14} />}
-                                                {evt.type === 'ROYALTY' && <TrendingUp size={14} />}
-                                            </div>
-                                            <div className="flex-1 pb-6">
-                                                <div className="flex justify-between items-start">
-                                                    <p className="text-sm font-bold text-white leading-none mb-1 uppercase tracking-wider">{evt.type}</p>
-                                                    <span className="text-[10px] text-white/30 font-mono">{new Date(evt.timestamp).toLocaleDateString()}</span>
-                                                </div>
-                                                <p className="text-xs text-white/50 mb-2 italic">
-                                                    {evt.from.slice(0, 10)}… → {evt.to.slice(0, 10)}…
-                                                </p>
-                                                <div className="flex items-center gap-1.5 text-brand-400 font-bold text-sm">
-                                                    <Landmark size={12} /> {evt.price} XLM
-                                                </div>
-                                            </div>
-                                        </div>
-                                    ))
-                                ) : (
-                                    <div className="py-10 text-center text-white/30">
-                                        <History size={40} className="mx-auto mb-4 opacity-20" />
-                                        <p className="italic">No activity recorded yet</p>
-                                    </div>
-                                )}
+                            <div className="animate-fade-in max-h-[28rem] overflow-y-auto pr-2 custom-scrollbar">
+                                <ProvenanceTimeline
+                                    events={historyEvents}
+                                    isLoading={isLoadingHistory}
+                                    isLoadingMore={isLoadingMore}
+                                    error={historyError}
+                                    hasMore={hasMore}
+                                    onLoadMore={loadMore}
+                                />
                             </div>
                         )}
 
@@ -405,7 +381,7 @@ export default function ListingDetailPage({ id }: ListingClientProps) {
 
                 {/* RIGHT COLUMN: Action Panel */}
                 <div className="space-y-8 animate-fade-in-right sticky top-28">
-                    <div className="p-10 rounded-[3rem] bg-gradient-to-br from-white/10 to-white/5 border border-white/10 backdrop-blur-md shadow-2xl relative overflow-hidden">
+                    <div className="p-6 md:p-10 rounded-[3rem] bg-gradient-to-br from-white/10 to-white/5 border border-white/10 backdrop-blur-md shadow-2xl relative overflow-hidden">
                         {/* Background design element */}
                         <div className="absolute -top-10 -right-10 w-40 h-40 bg-brand-500/10 blur-3xl rounded-full" />
                         <div className="absolute -bottom-10 -left-10 w-40 h-40 bg-terracotta-500/10 blur-3xl rounded-full" />
@@ -415,7 +391,7 @@ export default function ListingDetailPage({ id }: ListingClientProps) {
                                 {metadata?.title || `Art Asset #${id}`}
                             </h1>
 
-                            <div className="flex items-center gap-4 mb-8">
+                            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 mb-8">
                                 <div className="flex -space-x-3">
                                     <div className="w-8 h-8 rounded-full bg-brand-500 border-2 border-midnight-950 flex items-center justify-center text-white font-bold text-xs ring-2 ring-brand-500/20">A</div>
                                     <div className="w-8 h-8 rounded-full bg-terracotta-500 border-2 border-midnight-950 flex items-center justify-center text-white font-bold text-xs ring-2 ring-terracotta-500/20">B</div>
@@ -480,19 +456,19 @@ export default function ListingDetailPage({ id }: ListingClientProps) {
 
                                 {auction && isActive && !isOwn && (
                                     <div className="space-y-4">
-                                        <div className="flex gap-4">
+                                        <div className="flex flex-col sm:flex-row gap-4">
                                             <input
                                                 type="number"
                                                 placeholder="Bid amount..."
                                                 value={bidAmount}
                                                 onChange={(e) => setBidAmount(e.target.value)}
-                                                className="flex-1 rounded-2xl bg-white/5 border border-white/10 px-6 text-white text-lg font-bold focus:outline-none focus:border-brand-500 transition-all"
+                                                className="w-full sm:flex-1 rounded-2xl bg-white/5 border border-white/10 px-6 py-4 sm:py-0 text-white text-lg font-bold focus:outline-none focus:border-brand-500 transition-all"
                                             />
                                             <GuardButton
                                                 onAction={handleBid}
                                                 disabled={isBidding || !bidAmount}
                                                 actionName="To place a bid"
-                                                className="rounded-2xl bg-white text-midnight-950 px-8 py-5 text-lg font-black hover:bg-brand-400 hover:text-white transition-all active:scale-95 disabled:opacity-50"
+                                                className="w-full sm:w-auto rounded-2xl bg-white text-midnight-950 px-8 py-5 text-lg font-black hover:bg-brand-400 hover:text-white transition-all active:scale-95 disabled:opacity-50"
                                             >
                                                 <Gavel size={24} />
                                             </GuardButton>
@@ -503,7 +479,7 @@ export default function ListingDetailPage({ id }: ListingClientProps) {
 
                                 {isActive && !isOwn && (
                                     <div className="space-y-4">
-                                        <div className="flex gap-4">
+                                        <div className="flex flex-col sm:flex-row gap-4">
                                             <input
                                                 type="number"
                                                 placeholder="Offer amount (XLM)..."
@@ -512,13 +488,13 @@ export default function ListingDetailPage({ id }: ListingClientProps) {
                                                     setOfferAmount(e.target.value);
                                                     setOfferSuccess(false);
                                                 }}
-                                                className="flex-1 rounded-2xl bg-white/5 border border-white/10 px-6 text-white text-lg font-bold focus:outline-none focus:border-brand-500 transition-all"
+                                                className="w-full sm:flex-1 rounded-2xl bg-white/5 border border-white/10 px-6 py-4 sm:py-0 text-white text-lg font-bold focus:outline-none focus:border-brand-500 transition-all"
                                             />
                                             <GuardButton
                                                 onAction={handleMakeOffer}
                                                 disabled={isOffering || !offerAmount}
                                                 actionName="To make an offer"
-                                                className="rounded-2xl bg-brand-500 text-white px-8 py-5 text-sm uppercase font-black hover:bg-brand-600 transition-all active:scale-95 disabled:opacity-50"
+                                                className="w-full sm:w-auto rounded-2xl bg-brand-500 text-white px-8 py-5 text-sm uppercase font-black hover:bg-brand-600 transition-all active:scale-95 disabled:opacity-50"
                                             >
                                                 {isOffering ? "Offering..." : "Make Offer"}
                                             </GuardButton>

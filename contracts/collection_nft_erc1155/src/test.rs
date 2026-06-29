@@ -5,7 +5,7 @@ use soroban_sdk::{
     Address, Env, String, Vec,
 };
 
-use crate::{DataKey, NormalNFT1155, NormalNFT1155Client};
+use crate::{DataKey, Error, NormalNFT1155, NormalNFT1155Client};
 
 /// Utility: advance ledger sequence to simulate TTL expiry windows
 fn jump_ledger(env: &Env, delta: u32) {
@@ -272,4 +272,132 @@ fn burn_with_missing_total_supply_key_returns_zero_not_amount() {
 
     // total_supply must be 0, not 3 (the old unwrap_or(amount) result).
     assert_eq!(client.total_supply(&token_id), 0u128);
+}
+
+// ─── Issue #40 — Supply cap and per-wallet limit tests ────────────────────────
+
+/// set_token_max_supply + mint: minting up to cap succeeds, over cap reverts.
+#[test]
+fn max_supply_cap_enforced_on_mint() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+
+    let token_id = client.mint_new(&alice, &5u128, &String::from_str(&env, "uri-0"));
+
+    // Set max supply to 10 (5 already minted)
+    client.set_token_max_supply(&token_id, &10u128);
+
+    // Mint 5 more — exactly at cap
+    client.mint(
+        &alice,
+        &token_id,
+        &5u128,
+        &String::from_str(&env, "uri-0"),
+    );
+    assert_eq!(client.total_supply(&token_id), 10u128);
+
+    // One more over cap — must revert with MaxSupplyReached
+    let result = client.try_mint(
+        &alice,
+        &token_id,
+        &1u128,
+        &String::from_str(&env, "uri-0"),
+    );
+    assert_eq!(result, Err(Ok(crate::Error::MaxSupplyReached)));
+}
+
+/// set_per_wallet_limit enforced: minting up to limit succeeds, over limit reverts.
+#[test]
+fn per_wallet_limit_enforced_on_mint() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // Set wallet limit to 3 tokens per wallet per token type
+    client.set_per_wallet_limit(&3u128);
+    assert_eq!(client.per_wallet_limit(), 3u128);
+
+    let token_id = client.mint_new(&alice, &3u128, &String::from_str(&env, "uri-0"));
+    assert_eq!(client.wallet_minted(&alice, &token_id), 3u128);
+
+    // Alice tries to mint 1 more — must revert with WalletLimitReached
+    let result = client.try_mint(
+        &alice,
+        &token_id,
+        &1u128,
+        &String::from_str(&env, "uri-0"),
+    );
+    assert_eq!(result, Err(Ok(crate::Error::WalletLimitReached)));
+
+    // Bob can still mint (different wallet)
+    client.mint(&bob, &token_id, &3u128, &String::from_str(&env, "uri-0"));
+    assert_eq!(client.wallet_minted(&bob, &token_id), 3u128);
+}
+
+/// mint_batch respects both caps atomically.
+#[test]
+fn mint_batch_supply_cap_enforced() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+
+    // Pre-create token 0 with a cap of 10
+    let token_id = client.mint_new(&alice, &5u128, &String::from_str(&env, "uri-0"));
+    client.set_token_max_supply(&token_id, &10u128);
+
+    let token_ids = Vec::from_array(&env, [token_id]);
+    let amounts = Vec::from_array(&env, [6u128]); // 5 existing + 6 = 11 > cap 10
+    let uris = Vec::from_array(&env, [String::from_str(&env, "uri-0")]);
+
+    let result = client.try_mint_batch(&alice, &token_ids, &amounts, &uris);
+    assert_eq!(result, Err(Ok(crate::Error::MaxSupplyReached)));
+}
+
+/// wallet_minted accumulates correctly across multiple mints.
+#[test]
+fn wallet_minted_counter_accurate_across_multiple_mints() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+
+    client.set_per_wallet_limit(&100u128);
+
+    let token_id = client.mint_new(&alice, &10u128, &String::from_str(&env, "uri-0"));
+    assert_eq!(client.wallet_minted(&alice, &token_id), 10u128);
+
+    client.mint(&alice, &token_id, &20u128, &String::from_str(&env, "uri-0"));
+    assert_eq!(client.wallet_minted(&alice, &token_id), 30u128);
+
+    client.mint(&alice, &token_id, &15u128, &String::from_str(&env, "uri-0"));
+    assert_eq!(client.wallet_minted(&alice, &token_id), 45u128);
+
+    assert_eq!(client.total_supply(&token_id), 45u128);
+}
+
+/// total_supply increments accurately across multiple mints from different wallets.
+#[test]
+fn total_supply_accurate_across_multiple_mints() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    let token_id = client.mint_new(&alice, &10u128, &String::from_str(&env, "uri-0"));
+    client.mint(&bob, &token_id, &20u128, &String::from_str(&env, "uri-0"));
+    client.mint(&alice, &token_id, &5u128, &String::from_str(&env, "uri-0"));
+
+    assert_eq!(client.total_supply(&token_id), 35u128);
+    assert_eq!(client.balance_of(&alice, &token_id), 15u128);
+    assert_eq!(client.balance_of(&bob, &token_id), 20u128);
+}
+
+/// Per-wallet limit with no limit set (0) does not block any mint.
+#[test]
+fn no_wallet_limit_allows_unlimited_mints() {
+    let (env, client, _, _) = setup();
+    let alice = Address::generate(&env);
+
+    // Default: no limit
+    assert_eq!(client.per_wallet_limit(), 0u128);
+
+    let token_id = client.mint_new(&alice, &1000u128, &String::from_str(&env, "uri-0"));
+    client.mint(&alice, &token_id, &1000u128, &String::from_str(&env, "uri-0"));
+    assert_eq!(client.total_supply(&token_id), 2000u128);
 }

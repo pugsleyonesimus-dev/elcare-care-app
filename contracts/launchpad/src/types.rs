@@ -1,4 +1,4 @@
-use soroban_sdk::{contracterror, contracttype, Address};
+use soroban_sdk::{contracterror, contracttype, Address, String};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -8,6 +8,7 @@ pub enum Error {
     NotInitialized = 2,
     NotAdmin = 3,
     WasmHashNotSet = 4,
+    InvalidFeeBps = 5,
 }
 
 /// Which of the four collection types was deployed.
@@ -20,13 +21,17 @@ pub enum CollectionKind {
     LazyMint1155,
 }
 
-/// A record stored for every deployed collection.
+/// A record stored for every deployed collection (issues #37 + #38).
 #[contracttype]
 #[derive(Clone)]
 pub struct CollectionRecord {
     pub address: Address,
     pub kind: CollectionKind,
     pub creator: Address,
+    pub name: String,
+    pub symbol: String,
+    pub ledger: u32,
+    pub platform_fee_bps: u32,
 }
 
 #[contracttype]
@@ -41,12 +46,11 @@ pub enum DataKey {
     WasmLazy721,
     WasmLazy1155,
     CollectionCount,
-    ByCreator(Address), // Address → Vec<CollectionRecord> (legacy, will be removed)
-    AllCollections,     // Vec<CollectionRecord> (legacy, will be removed)
-    /// Indexed collection by global index (#51)
+    ByCreator(Address),
+    AllCollections,
     CollectionByIndex(u64),
-    /// Per-creator collection count (#51)
     CreatorCollectionCount(Address),
-    /// Per-creator indexed collection (#51)
     CreatorCollectionByIndex(Address, u64),
+    /// Direct lookup by collection address (#37)
+    CollectionByAddress(Address),
 }

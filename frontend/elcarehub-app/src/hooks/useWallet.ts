@@ -17,6 +17,8 @@ export type WalletStatus =
 
 export interface WalletState {
   publicKey: string | null;
+  balance: string | null;
+  isLoadingBalance: boolean;
   networkPassphrase: string | null;
   status: WalletStatus;
   isInstalled: boolean;

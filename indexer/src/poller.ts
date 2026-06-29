@@ -7,15 +7,19 @@ import {
   networkLatestLedgerGauge,
   syncLatencyGauge
 } from './metrics.js';
+import { recordProgress } from './stall.js';
 import { collectMarketplaceEvents, MAX_LEDGER_WINDOW } from './event-sync.js';
+import { withRetry } from './retry.js';
 import redis from './redis.js';
+import { loadConfig } from './config.js';
 
 dotenv.config();
 
 const RPC_URL = process.env.STELLAR_RPC_URL || 'https://soroban-testnet.stellar.org';
 const CONTRACT_ID = process.env.MARKETPLACE_CONTRACT_ID || '';
 const LAUNCHPAD_CONTRACT_ID = process.env.LAUNCHPAD_CONTRACT_ID || '';
-const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || '5000');
+
+export const MAX_REORG_DEPTH = 100;
 
 // Retry back-off base in ms; doubles on each consecutive failure up to MAX_BACKOFF_MS.
 const BASE_BACKOFF_MS = 2_000;
@@ -25,6 +29,13 @@ let consecutiveErrors = 0;
 
 // Graceful shutdown coordination
 let shuttingDown = false;
+let shutdownStarted = false;
+const shutdownHooks: Array<() => Promise<void>> = [];
+
+/** Register an async cleanup function to run during graceful shutdown. */
+export function registerShutdownHook(fn: () => Promise<void>): void {
+  shutdownHooks.push(fn);
+}
 
 function getContractIds(): string[] {
   return [CONTRACT_ID, LAUNCHPAD_CONTRACT_ID].filter(Boolean);
@@ -40,10 +51,10 @@ function setupSignalHandlers() {
   const onSignal = (sig: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`[Shutdown] Received ${sig} — attempting graceful shutdown`);
+    logger.info('Shutdown signal received', { signal: sig });
     // Start async cleanup; don't await here since signals may be re-delivered
     gracefulShutdown().catch((err) => {
-      console.error('[Shutdown] Graceful shutdown failed:', err);
+      logger.error('Graceful shutdown failed', { err });
       process.exit(1);
     });
   };
@@ -51,24 +62,26 @@ function setupSignalHandlers() {
   process.on('SIGINT', () => onSignal('SIGINT'));
 }
 
-async function gracefulShutdown() {
-  console.log('[Shutdown] Closing resources: Prisma + Redis');
+export async function gracefulShutdown(): Promise<void> {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+
+  console.log('[Shutdown] Closing resources: Prisma + Redis + registered hooks');
   const cleanup = Promise.allSettled([
     prisma.$disconnect(),
-    // redis may not be connected in some test environments
     (redis && typeof redis.disconnect === 'function') ? redis.disconnect() : Promise.resolve(),
+    ...shutdownHooks.map((fn) => fn()),
   ]);
 
-  // Timeout fallback: force exit if cleanup hangs
   try {
     await Promise.race([
       cleanup,
-      new Promise((_, rej) => setTimeout(() => rej(new Error('shutdown timeout')), 10000)),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('shutdown timeout')), 10_000)),
     ]);
-    console.log('[Shutdown] Cleanup complete, exiting');
+    logger.info('Shutdown: cleanup complete');
     process.exit(0);
   } catch (err) {
-    console.error('[Shutdown] Cleanup timed out or errored:', err);
+    logger.error('Shutdown: cleanup timed out', { err });
     process.exit(1);
   }
 }
@@ -84,7 +97,7 @@ const server = new rpc.Server(RPC_URL);
  * Called when a chain re-org is detected.
  */
 export async function revertLedgers(safeAtLedger: number): Promise<void> {
-  console.warn(`[Reorg] Rolling back to ledger ${safeAtLedger}`);
+  logger.warn('Reorg: rolling back', { safeAtLedger });
   await prisma.$transaction(async (tx) => {
     // Remove events that occurred after the safe checkpoint
     await tx.marketplaceEvent.deleteMany({
@@ -113,7 +126,7 @@ export async function revertLedgers(safeAtLedger: number): Promise<void> {
       data: { lastLedger: safeAtLedger, lastLedgerHash: null },
     });
   });
-  console.log(`[Reorg] Rollback complete. Resuming from ledger ${safeAtLedger + 1}`);
+  logger.info('Reorg: rollback complete', { resumeFromLedger: safeAtLedger + 1 });
 }
 
 /** SyncState fields for a ledger advance; omits hash when fetch failed so we keep the prior checkpoint. */
@@ -125,6 +138,33 @@ export function buildSyncStateLedgerData(
     return { lastLedger, lastLedgerHash: ledgerHash };
   }
   return { lastLedger };
+}
+
+/**
+ * Walks back from `divergedAt` up to MAX_REORG_DEPTH ledgers to find the
+ * deepest ledger still accessible on the network's canonical chain.
+ * Returns that ledger's sequence number as the safe revert point.
+ */
+export async function findReorgSafePoint(
+  divergedAt: number,
+  rpcServer: rpc.Server
+): Promise<number> {
+  for (let depth = 1; depth <= MAX_REORG_DEPTH; depth++) {
+    const candidate = divergedAt - depth;
+    if (candidate <= 0) return 0;
+    try {
+      const res = await rpcServer.getLedgers({
+        startLedger: candidate,
+        pagination: { limit: 1 },
+      });
+      if (res.ledgers && res.ledgers.length > 0) {
+        return candidate;
+      }
+    } catch {
+      // Ledger not accessible at this depth; keep walking back
+    }
+  }
+  return Math.max(0, divergedAt - MAX_REORG_DEPTH);
 }
 
 export async function validateHashContinuity(
@@ -142,25 +182,26 @@ export async function validateHashContinuity(
         const networkLedger = ledgersRes.ledgers[0];
         if (networkLedger.hash !== syncState.lastLedgerHash) {
           console.warn(`Chain re-org detected at ledger ${syncState.lastLedger}! DB hash: ${syncState.lastLedgerHash}, Network hash: ${networkLedger.hash}`);
-          const toLedger = Math.max(0, syncState.lastLedger - 1);
-          await revertLedgers(toLedger);
+          const safeLedger = await findReorgSafePoint(syncState.lastLedger, rpcServer);
+          await revertLedgers(safeLedger);
           return false;
         }
       }
     } catch (err) {
-      console.error(`Error validating ledger hash continuity at ledger ${syncState.lastLedger}:`, err);
+      logger.error('Hash continuity check failed', { ledger: syncState.lastLedger, err });
     }
   }
   return true;
 }
 
 export async function startPolling() {
+  const config = loadConfig(); // Validates at startup; throws on invalid env values
   const contractIds = getContractIds();
   if (contractIds.length === 0) {
     throw new Error('At least one of MARKETPLACE_CONTRACT_ID or LAUNCHPAD_CONTRACT_ID must be set');
   }
 
-  console.log(`Starting indexer poller for contract(s): ${contractIds.join(', ')}`);
+  console.log(`Starting indexer poller for contract(s): ${contractIds.join(', ')} (pollIntervalMs=${config.pollIntervalMs}, maxLedgersPerCycle=${config.maxLedgersPerCycle})`);
 
   while (!shuttingDown) {
     try {
@@ -180,19 +221,15 @@ export async function startPolling() {
 
       // 3. Resolve start ledger, clamping to the safe RPC window on every poll
       let networkLatestLedger: number;
-      try {
-        const latestRes = await server.getLatestLedger();
-        networkLatestLedger = latestRes.sequence;
-      } catch (err) {
-        console.error({ msg: 'Failed to fetch latest ledger', err });
-        throw err;
-      }
+      networkLatestLedger = await withRetry(
+        () => server.getLatestLedger().then((r) => r.sequence),
+        { operation: 'getLatestLedger', maxAttempts: 5, baseDelayMs: 1_000 }
+      );
 
       networkLatestLedgerGauge.set(networkLatestLedger);
 
       if (syncState.lastLedger > 0 && networkLatestLedger < syncState.lastLedger) {
-        console.warn({
-          msg: 'Network latest ledger moved behind indexed state',
+        logger.warn('Network latest ledger moved behind indexed state', {
           indexedLedger: syncState.lastLedger,
           networkLatestLedger,
         });
@@ -205,8 +242,7 @@ export async function startPolling() {
       let skippedRange: { from: number; to: number } | null = null;
       if (startLedger < windowFloor) {
         skippedRange = { from: startLedger, to: windowFloor - 1 };
-        console.warn({
-          msg: 'Skipping ledger gap outside the live RPC window',
+        logger.warn('Skipping ledger gap outside the live RPC window', {
           skippedRange,
           windowFloor,
           networkLatest: networkLatestLedger,
@@ -220,7 +256,9 @@ export async function startPolling() {
 
         syncState = resetState;
       }
-      const decodedEvents = await collectMarketplaceEvents(server, contractIds, startLedger, networkLatestLedger);
+      // Cap how many ledgers we process per cycle to bound catch-up batch size.
+      const batchEndLedger = Math.min(networkLatestLedger, startLedger + config.maxLedgersPerCycle - 1);
+      const decodedEvents = await collectMarketplaceEvents(server, contractIds, startLedger, batchEndLedger);
 
       let latestHash: string | null = null;
       if (decodedEvents.length > 0) {
@@ -234,7 +272,7 @@ export async function startPolling() {
             latestHash = ledgersRes.ledgers[0].hash;
           }
         } catch (err) {
-          console.error(`Failed to fetch hash for ledger ${maxLedger}:`, err);
+          logger.error('Failed to fetch hash for ledger', { ledger: maxLedger, err });
         }
 
         const { updatedState, newEvents } = await prisma.$transaction(async (tx) => {
@@ -248,27 +286,29 @@ export async function startPolling() {
         });
 
         updateSyncMetrics(updatedState.lastLedger, networkLatestLedger);
+        recordProgress();
 
         for (const ev of newEvents) emitSSEEvent(ev);
-      } else if (networkLatestLedger > syncState.lastLedger) {
+      } else if (batchEndLedger > syncState.lastLedger) {
         try {
           const ledgersRes = await server.getLedgers({
-            startLedger: networkLatestLedger,
+            startLedger: batchEndLedger,
             pagination: { limit: 1 },
           });
           if (ledgersRes.ledgers && ledgersRes.ledgers.length > 0) {
             latestHash = ledgersRes.ledgers[0].hash;
           }
         } catch (err) {
-          console.error(`Failed to fetch hash for latest network ledger ${networkLatestLedger}:`, err);
+          console.error(`Failed to fetch hash for ledger ${batchEndLedger}:`, err);
         }
 
         const updatedState = await prisma.syncState.update({
           where: { id: 1 },
-          data: buildSyncStateLedgerData(networkLatestLedger, latestHash),
+          data: buildSyncStateLedgerData(batchEndLedger, latestHash),
         });
 
         updateSyncMetrics(updatedState.lastLedger, networkLatestLedger);
+        recordProgress();
       } else {
         updateSyncMetrics(syncState.lastLedger, networkLatestLedger);
       }
@@ -280,11 +320,10 @@ export async function startPolling() {
         BASE_BACKOFF_MS * Math.pow(2, consecutiveErrors - 1),
         MAX_BACKOFF_MS
       );
-      console.error({
-        msg: 'Error in polling loop',
+      logger.error('Error in polling loop', {
         consecutiveErrors,
         backoffMs: backoff,
-        error: error instanceof Error ? error.message : String(error),
+        err: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
       await new Promise((resolve) => setTimeout(resolve, backoff));
@@ -292,13 +331,12 @@ export async function startPolling() {
     }
 
     consecutiveErrors = 0;
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+    await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
   }
 
-    // If the loop exited due to shutdown signal, ensure resources are cleaned
-    if (shuttingDown) {
-      await gracefulShutdown();
-    }
+  if (shuttingDown) {
+    await gracefulShutdown();
+  }
 }
 
 async function fetchListingFromChain(_listingId: bigint): Promise<any | null> {
@@ -461,7 +499,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         },
       });
-      if (count === 0) console.warn(`LISTING_UPDATED: listing ${listingId} not found at ledger ${ledgerSequence}`);
+      if (count === 0) logger.warn('LISTING_UPDATED: listing not found', { listingId: listingId?.toString(), ledger: ledgerSequence });
       break;
     }
 
@@ -474,7 +512,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         },
       });
-      if (count === 0) console.error(`ARTWORK_SOLD: listing ${listingId} not found — sale not recorded at ledger ${ledgerSequence}`);
+      if (count === 0) logger.error('ARTWORK_SOLD: listing not found — sale not recorded', { listingId: listingId?.toString(), ledger: ledgerSequence });
       break;
     }
 
@@ -486,7 +524,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         },
       });
-      if (count === 0) console.warn(`LISTING_CANCELLED: listing ${listingId} not found at ledger ${ledgerSequence}`);
+      if (count === 0) logger.warn('LISTING_CANCELLED: listing not found', { listingId: listingId?.toString(), ledger: ledgerSequence });
       break;
     }
     
@@ -550,7 +588,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         }
       });
-      if (count === 0) console.warn(`BID_PLACED: auction ${listingId} not found at ledger ${ledgerSequence}`);
+      if (count === 0) logger.warn('BID_PLACED: auction not found', { auctionId: listingId?.toString(), ledger: ledgerSequence });
       break;
     }
 
@@ -564,7 +602,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         }
       });
-      if (count === 0) console.error(`AUCTION_RESOLVED: auction ${listingId} not found — resolution not recorded at ledger ${ledgerSequence}`);
+      if (count === 0) logger.error('AUCTION_RESOLVED: auction not found — resolution not recorded', { auctionId: listingId?.toString(), ledger: ledgerSequence });
       break;
     }
 
@@ -576,7 +614,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         },
       });
-      if (count === 0) console.warn(`AUCTION_CANCELLED: auction ${listingId} not found at ledger ${ledgerSequence}`);
+      if (count === 0) logger.warn('AUCTION_CANCELLED: auction not found', { auctionId: listingId?.toString(), ledger: ledgerSequence });
       break;
     }
 
@@ -621,7 +659,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
           updatedAtLedger: ledgerSequence,
         }
       });
-      if (listingCount === 0) console.error(`OFFER_ACCEPTED: listing ${data.listing_id} not found — offer ${data.offer_id} accepted but listing not updated at ledger ${ledgerSequence}`);
+      if (listingCount === 0) logger.error('OFFER_ACCEPTED: listing not found — offer accepted but listing not updated', { listingId: data.listing_id?.toString(), offerId: data.offer_id?.toString(), ledger: ledgerSequence });
       break;
     }
 
