@@ -4,18 +4,19 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useWalletContext } from "@/context/WalletContext";
 import { useArtistListings, useCancelListing } from "@/hooks/useMarketplace";
 import { ListingForm } from "@/components/ListingForm";
 import { AuctionForm } from "@/components/AuctionForm";
 import { stroopsToXlm, Listing } from "@/lib/contract";
-import { Plus, Package, XCircle, Wallet, Edit2, Activity, TrendingUp, Gavel } from "lucide-react";
+import { fetchArtistMetrics, ArtistMetrics, MetricsRange } from "@/lib/indexer";
+import { Plus, Package, XCircle, Wallet, Edit2, Activity, TrendingUp, Gavel, BarChart2 } from "lucide-react";
 import { WalletGuard } from "@/components/WalletGuard";
 import { SUPPORTED_TOKENS } from "@/config/tokens";
 import { clsx } from "clsx";
 
-type Tab = "listings" | "list" | "edit" | "auction";
+type Tab = "listings" | "list" | "edit" | "auction" | "metrics";
 
 const STATUS_COLOR: Record<string, string> = {
   Active: "text-green-600 bg-green-50",
@@ -23,14 +24,142 @@ const STATUS_COLOR: Record<string, string> = {
   Cancelled: "text-red-500 bg-red-50",
 };
 
+// ── Inline bar chart (no extra deps) ─────────────────────────────────────────
+
+function MiniBarChart({ data, label }: { data: { date: string; count: number }[]; label: string }) {
+  if (data.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-24 text-white/30 text-xs">
+        No {label} data yet
+      </div>
+    );
+  }
+  const max = Math.max(...data.map((d) => d.count), 1);
+  return (
+    <div className="w-full">
+      <p className="text-[10px] uppercase tracking-widest font-bold text-white/40 mb-3">{label}</p>
+      <div className="flex items-end gap-1 h-20">
+        {data.map((d) => (
+          <div key={d.date} className="flex-1 flex flex-col items-center gap-1 group" title={`${d.date}: ${d.count}`}>
+            <div
+              className="w-full rounded-t bg-brand-500/60 group-hover:bg-brand-400 transition-all"
+              style={{ height: `${Math.max((d.count / max) * 100, 8)}%` }}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-between mt-1">
+        <span className="text-[9px] text-white/20">{data[0]?.date}</span>
+        <span className="text-[9px] text-white/20">{data[data.length - 1]?.date}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── MetricsDashboard ──────────────────────────────────────────────────────────
+
+function MetricsDashboard({ publicKey }: { publicKey: string }) {
+  const [range, setRange] = useState<MetricsRange>("week");
+  const [metrics, setMetrics] = useState<ArtistMetrics | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!publicKey) return;
+    setLoading(true);
+    fetchArtistMetrics(publicKey, range)
+      .then(setMetrics)
+      .finally(() => setLoading(false));
+  }, [publicKey, range]);
+
+  const ranges: MetricsRange[] = ["day", "week", "month", "all"];
+
+  return (
+    <div className="space-y-8">
+      {/* Range selector */}
+      <div className="flex items-center gap-2">
+        {ranges.map((r) => (
+          <button
+            key={r}
+            onClick={() => setRange(r)}
+            className={clsx(
+              "px-4 py-1.5 rounded-full text-[11px] font-bold uppercase tracking-widest border transition-all",
+              range === r
+                ? "bg-brand-500/20 text-brand-400 border-brand-500/40"
+                : "bg-white/5 text-white/40 border-white/10 hover:text-white hover:border-white/20"
+            )}
+          >
+            {r}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="h-24 animate-pulse rounded-[2rem] bg-white/[0.03] border border-white/5" />
+          ))}
+        </div>
+      ) : metrics ? (
+        <>
+          {/* KPI cards */}
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {[
+              { label: "Listings", value: metrics.totalListings, color: "brand" },
+              { label: "Sales", value: metrics.totalSales, color: "mint" },
+              { label: "Unique Buyers", value: metrics.uniqueBuyers, color: "terracotta" },
+              {
+                label: "Conversion",
+                value: `${(metrics.conversionRate * 100).toFixed(1)}%`,
+                color: "brand",
+              },
+            ].map(({ label, value, color }) => (
+              <div
+                key={label}
+                className="rounded-[2rem] bg-white/[0.03] border border-white/5 p-5 space-y-2"
+              >
+                <p className="text-[10px] uppercase tracking-widest font-bold text-white/40">{label}</p>
+                <p
+                  className={clsx(
+                    "text-3xl font-display font-bold",
+                    color === "brand" ? "text-brand-400" :
+                      color === "mint" ? "text-mint-400" : "text-terracotta-400"
+                  )}
+                >
+                  {value}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {/* Volume */}
+          <div className="rounded-[2rem] bg-white/[0.03] border border-white/5 p-6 space-y-2">
+            <p className="text-[10px] uppercase tracking-widest font-bold text-white/40">Total Volume</p>
+            <p className="text-4xl font-display font-bold text-white">
+              {stroopsToXlm(BigInt(Math.round(parseFloat(metrics.totalVolume))))}
+              <span className="ml-2 text-sm font-normal text-brand-400">XLM</span>
+            </p>
+          </div>
+
+          {/* Sales timeline chart */}
+          <div className="rounded-[2rem] bg-white/[0.03] border border-white/5 p-6">
+            <MiniBarChart data={metrics.salesTimeline} label="Sales over time" />
+          </div>
+        </>
+      ) : (
+        <div className="flex items-center justify-center h-40 text-white/30 text-sm">
+          No metrics available
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const { publicKey } = useWalletContext();
   const { listings, isLoading, refresh } = useArtistListings(publicKey);
   const { cancel, isCancelling } = useCancelListing(publicKey);
   const [tab, setTab] = useState<Tab>("listings");
-  const [editingListing, setEditingListing] = useState<Listing | null>(null);
-
-  const activeCnt = listings.filter((l: Listing) => l.status === "Active").length;
+  const [editingListing, setEditingListing] = useState<Listing | null>(null);  const activeCnt = listings.filter((l: Listing) => l.status === "Active").length;
   const soldCnt = listings.filter((l: Listing) => l.status === "Sold").length;
 
   const getTokenSymbol = (address: string) => {
@@ -134,6 +263,19 @@ export default function DashboardPage() {
               )}
             </button>
             <button
+              onClick={() => setTab("metrics")}
+              className={clsx(
+                "group relative flex items-center gap-3 px-6 sm:px-8 py-5 text-sm font-bold transition-all duration-500 whitespace-nowrap",
+                tab === "metrics" ? "text-mint-400" : "text-white/40 hover:text-white"
+              )}
+            >
+              <BarChart2 size={18} className={clsx("transition-all duration-500 group-hover:scale-125", tab === "metrics" && "text-mint-400 drop-shadow-[0_0_8px_rgba(38,167,110,0.5)]")} />
+              Metrics
+              {tab === "metrics" && (
+                <div className="absolute inset-x-4 bottom-0 h-1.5 rounded-t-full bg-mint-500 shadow-[0_-5px_15px_rgba(38,167,110,0.6)] animate-slide-in-right" />
+              )}
+            </button>
+            <button
               onClick={() => setTab("list")}
               className={clsx(
                 "group relative flex items-center gap-3 px-6 sm:px-8 py-5 text-sm font-bold transition-all duration-500 whitespace-nowrap",
@@ -171,7 +313,9 @@ export default function DashboardPage() {
           </div>
 
           <div className="animate-fade-in duration-700">
-            {tab === "list" ? (
+            {tab === "metrics" ? (
+              <MetricsDashboard publicKey={publicKey ?? ""} />
+            ) : tab === "list" ? (
               <div className="w-full">
                 <ListingForm
                   onSuccess={() => {

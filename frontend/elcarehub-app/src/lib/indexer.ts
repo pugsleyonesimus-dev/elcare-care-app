@@ -27,6 +27,24 @@ export interface ListingHistoryPage {
   hasMore: boolean;
 }
 
+export type MetricsRange = "day" | "week" | "month" | "all";
+
+export interface SalesTimelinePoint {
+  date: string;
+  count: number;
+}
+
+export interface ArtistMetrics {
+  address: string;
+  range: MetricsRange;
+  totalListings: number;
+  totalSales: number;
+  totalVolume: string;
+  uniqueBuyers: number;
+  conversionRate: number;
+  salesTimeline: SalesTimelinePoint[];
+}
+
 interface RoyaltyStatsResponse {
   totalEarned: string;
   payoutCount: number;
@@ -721,4 +739,34 @@ export function subscribeToMarketplaceEvents(
       return lastEventId;
     },
   };
+}
+
+/**
+ * Fetches launch metrics (mints, volume, conversion) for an artist.
+ */
+export async function fetchArtistMetrics(
+  address: string,
+  range: MetricsRange = "all"
+): Promise<ArtistMetrics> {
+  const empty: ArtistMetrics = {
+    address,
+    range,
+    totalListings: 0,
+    totalSales: 0,
+    totalVolume: "0",
+    uniqueBuyers: 0,
+    conversionRate: 0,
+    salesTimeline: [],
+  };
+  if (!isNonEmptyString(address)) return empty;
+  try {
+    const params = range !== "all" ? `?range=${range}` : "";
+    const data = await fetchWithRetry<ArtistMetrics>(
+      `/artists/${encodeURIComponent(address)}/metrics${params}`
+    );
+    if (data && typeof data === "object" && "totalListings" in data) return data as ArtistMetrics;
+  } catch (e) {
+    console.warn("[indexer] fetchArtistMetrics:", e instanceof Error ? e.message : e);
+  }
+  return empty;
 }
