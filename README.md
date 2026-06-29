@@ -42,6 +42,7 @@ Every piece is verified on-chain — ensuring provenance and empowering artists 
 - [Testnet Deployment](#testnet-deployment)
 - [Tech Stack](#tech-stack)
 - [Roadmap](#roadmap)
+- [Security](#security)
 - [Contributing](#contributing)
 
 ---
@@ -410,6 +411,14 @@ Base URL: `http://localhost:4000`
 - [ ] Cross-chain bridge for collectors outside the Stellar ecosystem
 
 ---
+
+## Security
+
+ElcareHub handles on-chain value on behalf of artists and collectors. We take security seriously.
+
+- **Report a vulnerability:** see [SECURITY.md](SECURITY.md) for the disclosure process and SLA.
+- **Threat model:** [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — attack surface analysis for the contract, indexer, and frontend.
+- **Incident runbook:** [docs/INCIDENT_RUNBOOK.md](docs/INCIDENT_RUNBOOK.md) — pause procedure, admin key rotation, indexer re-org recovery, and secret rotation.
 
 ## Contributing
 

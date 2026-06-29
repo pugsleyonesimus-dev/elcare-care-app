@@ -3,14 +3,19 @@ import * as Sentry from "@sentry/nextjs";
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
 
-  // Adjust this value in production, or use tracesSampler for greater control
-  tracesSampleRate: 1.0,
+  environment: process.env.NODE_ENV,
+  release:
+    process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ??
+    process.env.NEXT_PUBLIC_APP_VERSION,
 
-  // Setting this option to true will print useful information to the console while you're setting up Sentry.
+  tracesSampleRate: 1.0,
   debug: false,
 
   replaysOnErrorSampleRate: 1.0,
   replaysSessionSampleRate: 0.1,
+
+  // Never send PII to Sentry.
+  sendDefaultPii: false,
 
   integrations: [
     Sentry.replayIntegration({
@@ -19,11 +24,10 @@ Sentry.init({
     }),
   ],
 
-  // Filter out expected errors
   beforeSend(event, hint) {
     const error = hint.originalException;
 
-    // Filter out wallet connection cancellations
+    // Drop wallet connection cancellations — not actionable.
     if (error && typeof error === "object" && "message" in error) {
       const message = String(error.message).toLowerCase();
       if (
@@ -37,6 +41,4 @@ Sentry.init({
 
     return event;
   },
-
-  environment: process.env.NODE_ENV,
 });

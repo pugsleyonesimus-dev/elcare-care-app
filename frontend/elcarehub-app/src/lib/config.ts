@@ -32,17 +32,41 @@ export const config = {
   isMainnet: (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? "testnet") === "mainnet",
 } as const;
 
-export function assertConfig() {
+// Required on both client and server.
+const PUBLIC_REQUIRED = [
+  "NEXT_PUBLIC_CONTRACT_ID",
+  "NEXT_PUBLIC_LAUNCHPAD_CONTRACT_ID",
+] as const;
+
+// Required server-side only — never validated on the client to avoid
+// accidentally surfacing secrets that are not part of the client bundle.
+const SERVER_REQUIRED = ["PINATA_JWT"] as const;
+
+export function assertConfig(): void {
   const missing: string[] = [];
-  if (!config.contractId) missing.push("NEXT_PUBLIC_CONTRACT_ID");
-  if (!config.launchpadContractId) missing.push("NEXT_PUBLIC_LAUNCHPAD_CONTRACT_ID");
+
+  for (const name of PUBLIC_REQUIRED) {
+    if (!process.env[name]) missing.push(name);
+  }
+
+  // typeof window === "undefined" is true in Node.js (server / build) only.
+  if (typeof window === "undefined") {
+    for (const name of SERVER_REQUIRED) {
+      if (!process.env[name]) missing.push(name);
+    }
+  }
+
   if (missing.length > 0) {
-    console.warn(
-      `[ELCARE-HUB] Missing environment variables: ${missing.join(", ")}`
+    throw new Error(
+      `[ELCARE-HUB] Missing required environment variables: ${missing.join(", ")}.\n` +
+        "Copy .env.example to .env.local and fill in the required values."
     );
   }
 }
 
-// Warn immediately at module load so missing vars surface in server logs on boot,
+// Run at module load so missing vars surface in server logs on boot,
 // not silently at the moment a user first tries to interact with the contract.
-assertConfig();
+// Skipped in test environments to avoid breaking unit tests that don't set every var.
+if (process.env.NODE_ENV !== "test") {
+  assertConfig();
+}
