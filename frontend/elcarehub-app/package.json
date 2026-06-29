@@ -10,7 +10,8 @@
     "lint": "next lint",
     "type-check": "tsc --noEmit",
     "test": "jest --passWithNoTests",
-    "test:coverage": "jest --coverage --passWithNoTests",
+    "test:coverage": "COLLECT_COVERAGE=true jest --coverage --passWithNoTests",
+    "test:a11y": "jest --testPathPatterns=a11y --passWithNoTests",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },
@@ -30,6 +31,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@playwright/test": "^1.60.0",
     "@testing-library/jest-dom": "^6.4.6",
     "@testing-library/react": "^16.0.0",
@@ -42,6 +44,7 @@
     "eslint": "^8.57.0",
     "eslint-config-next": "14.2.4",
     "jest": "^30.3.0",
+    "jest-axe": "^10.0.0",
     "jest-environment-jsdom": "^30.3.0",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.4",

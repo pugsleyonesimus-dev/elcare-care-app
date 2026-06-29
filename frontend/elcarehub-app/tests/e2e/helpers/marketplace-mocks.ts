@@ -207,3 +207,37 @@ export async function resetE2eListingsInBrowser(page: Page) {
     (window as Window & { __E2E_RESET_LISTINGS__?: () => void }).__E2E_RESET_LISTINGS__?.();
   });
 }
+
+/** Seeds the in-browser mock chain listing used by buy_artwork in E2E mode. */
+export async function seedE2eChainListing(
+  page: Page,
+  listing: {
+    listing_id: number;
+    artist: string;
+    price: string;
+    token: string;
+    metadata_cid?: string;
+    collection?: string;
+    token_id?: number;
+  }
+) {
+  await page.evaluate((row) => {
+    const upsert = (
+      window as Window & { __E2E_UPSERT_LISTING__?: (listing: unknown) => void }
+    ).__E2E_UPSERT_LISTING__;
+    upsert?.({
+      listing_id: row.listing_id,
+      artist: row.artist,
+      collection: row.collection ?? 'CE2ECOLLECTIONPLACEHOLDER00000000000000001',
+      token_id: row.token_id ?? 1,
+      price: BigInt(row.price),
+      currency: 'XLM',
+      token: row.token,
+      metadata_cid: row.metadata_cid,
+      recipients: [{ address: row.artist, percentage: 100 }],
+      status: 'Active',
+      owner: null,
+      created_at: Math.floor(Date.now() / 1000),
+    });
+  }, listing);
+}

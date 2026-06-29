@@ -13,6 +13,7 @@ import { useSupportedTokens } from "@/hooks/useSupportedTokens";
 import { TokenConfig, getTokenConfigByAddress } from "@/config/tokens";
 import { resolveSupportedTokens, getDefaultSupportedToken } from "@/lib/token-support";
 import posthog from "posthog-js";
+import { useModalA11y } from "@/hooks/useModalA11y";
 
 interface CheckoutModalProps {
   isOpen: boolean;
@@ -31,6 +32,7 @@ export function CheckoutModal({
   onPurchased,
   isBuyingCrypto,
 }: CheckoutModalProps) {
+  const { dialogRef, titleId } = useModalA11y(isOpen, onClose);
   const [method, setMethod] = useState<"crypto" | "fiat">("crypto");
   const [selectedToken, setSelectedToken] = useState<TokenConfig | null>(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -97,18 +99,29 @@ export function CheckoutModal({
       <div
         className="absolute inset-0 bg-midnight-950/80 backdrop-blur-sm"
         onClick={onClose}
+        aria-hidden="true"
       />
-      <div className="relative w-full max-w-md overflow-hidden rounded-3xl bg-white shadow-2xl animate-scale-in">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        data-testid="checkout-modal"
+        tabIndex={-1}
+        className="relative w-full max-w-md overflow-hidden rounded-3xl bg-white shadow-2xl animate-scale-in outline-none"
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-100 p-6">
-          <h2 className="font-display text-xl font-bold text-gray-900">
+          <h2 id={titleId} className="font-display text-xl font-bold text-gray-900">
             Checkout
           </h2>
           <button
+            type="button"
             onClick={onClose}
-            className="rounded-full p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-900 transition"
+            aria-label="Close checkout"
+            className="rounded-full p-2 text-gray-700 hover:bg-gray-100 hover:text-gray-900 transition"
           >
-            <X size={20} />
+            <X size={20} aria-hidden="true" />
           </button>
         </div>
 
@@ -213,6 +226,8 @@ export function CheckoutModal({
             </div>
 
             <button
+              type="button"
+              data-testid="checkout-pay-button"
               onClick={handleCryptoPurchase}
               disabled={isBuyingCrypto}
               className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl bg-brand-500 py-5 font-bold text-white shadow-lg shadow-brand-500/20 hover:bg-brand-600 transition-all disabled:opacity-50"

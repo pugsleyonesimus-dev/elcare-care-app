@@ -422,6 +422,10 @@ ElcareHub handles on-chain value on behalf of artists and collectors. We take se
 
 ## Contributing
 
+See **[CONTRIBUTING.md](./CONTRIBUTING.md)** for workflow, coverage thresholds, E2E, indexer integration tests, and accessibility checks.
+
+Quick start:
+
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feat/your-feature`
 3. Commit your changes following [Conventional Commits](https://www.conventionalcommits.org/): `git commit -m "feat: add your feature"`

@@ -192,7 +192,7 @@ export default function ExplorePage() {
   const hasActiveFilters = filters.search !== "" || filters.status !== "All" || filters.category !== "All" || filters.minPrice !== "" || filters.maxPrice !== "";
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50" data-testid="explore-page">
       {/* Header */}
       <div className="bg-midnight-900 pt-32 pb-16">
         <div className="mx-auto max-w-7xl px-4 sm:px-6">

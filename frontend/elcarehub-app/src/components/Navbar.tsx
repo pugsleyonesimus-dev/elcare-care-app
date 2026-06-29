@@ -161,7 +161,7 @@ export function Navbar() {
                   </div>
                 )}
 
-                <div className="relative">
+                <div className="relative" data-testid="wallet-connected">
                   <button
                     onClick={() => setShowWalletMenu(!showWalletMenu)}
                     className="flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-colors cursor-pointer group"

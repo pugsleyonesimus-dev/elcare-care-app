@@ -7,10 +7,19 @@ export async function connectFreighterWallet(
 ) {
   await mockFreighter(page, { publicKey });
   await page.goto('/');
-  await page.waitForLoadState('domcontentloaded');
+  await expect(page.getByText('ELCARE-HUB').first()).toBeVisible({ timeout: 30_000 });
 
-  const shortKey = `${publicKey.slice(0, 4)}…${publicKey.slice(-4)}`;
-  await expect(page.getByText(shortKey)).toBeVisible({ timeout: 15_000 });
+  const nav = page.locator('nav');
+  const shortKey = `${publicKey.slice(0, 4)}...${publicKey.slice(-4)}`;
+
+  if (!(await page.getByText(shortKey).isVisible().catch(() => false))) {
+    await nav.getByRole('button', { name: 'Connect Wallet', exact: true }).click();
+    await page.getByRole('button', { name: /Freighter/i }).click();
+  }
+
+  await expect(
+    page.getByTestId('wallet-connected').or(page.getByText(shortKey))
+  ).toBeVisible({ timeout: 20_000 });
 }
 
 export async function openNewListingTab(page: Page) {
