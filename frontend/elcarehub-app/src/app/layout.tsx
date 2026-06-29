@@ -9,6 +9,7 @@ import { Navbar } from "@/components/Navbar";
 import { RootErrorBoundary } from "@/components/RootErrorBoundary";
 import { ToastProvider } from "@/components/ToastProvider";
 import { CSPostHogProvider } from "@/providers/PostHogProvider";
+import { E2eMockChainInit } from "@/components/E2eMockChainInit";
 
 export const metadata: Metadata = {
   title: "ELCARE-HUB — African Art on Stellar",
@@ -33,6 +34,7 @@ export default function RootLayout({
           <CSPostHogProvider>
             <ToastProvider>
               <RootErrorBoundary>
+                <E2eMockChainInit />
                 <Navbar />
                 <main className="w-full">{children}</main>
                 <footer className="bg-midnight-950 border-t border-white/5 py-10 text-center text-sm text-white/30">

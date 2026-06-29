@@ -113,9 +113,111 @@ jobs:
       - name: Run Build
         run: npm run build
         working-directory: frontend/elcarehub-app
-      - name: Run Tests
-        run: npm run test
+      - name: Run Tests with Coverage
+        run: npm run test:coverage
         working-directory: frontend/elcarehub-app
+        env:
+          CI: true
+      - name: Run Accessibility Tests
+        run: npm run test:a11y
+        working-directory: frontend/elcarehub-app
+      - name: Upload Coverage Report
+        if: always() && matrix.node-version == 20
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage-node20
+          path: frontend/elcarehub-app/coverage/
+          retention-days: 14
+
+  frontend-e2e:
+    name: Frontend E2E (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Cache NPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: frontend/elcarehub-app/node_modules
+          key: ${{ runner.os }}-node-20-${{ hashFiles('frontend/elcarehub-app/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-20-
+      - name: Install Dependencies
+        run: npm ci
+        working-directory: frontend/elcarehub-app
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend/elcarehub-app
+      - name: Run E2E Tests
+        run: npm run test:e2e
+        working-directory: frontend/elcarehub-app
+        env:
+          CI: true
+          NEXT_PUBLIC_E2E_MOCK_CHAIN: 'true'
+          NEXT_PUBLIC_CONTRACT_ID: CE2ECONTRACTPLACEHOLDER00000000000000000000001
+          NEXT_PUBLIC_LAUNCHPAD_CONTRACT_ID: CE2ELAUNCHPADPLACEHOLDER000000000000000000001
+          PINATA_JWT: e2e-test-pinata-jwt
+      - name: Upload Playwright Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/elcarehub-app/playwright-report/
+          retention-days: 14
+
+  indexer-integration:
+    name: Indexer Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: marketplace_indexer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Cache NPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: indexer/node_modules
+          key: ${{ runner.os }}-indexer-integration-${{ hashFiles('indexer/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-indexer-integration-
+      - name: Install Dependencies
+        run: npm ci
+        working-directory: indexer
+      - name: Run Integration Tests
+        run: npm run test:integration
+        working-directory: indexer
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/marketplace_indexer_test?schema=public
+          REDIS_URL: redis://localhost:6379
 
   indexer:
     name: Build and Test Indexer

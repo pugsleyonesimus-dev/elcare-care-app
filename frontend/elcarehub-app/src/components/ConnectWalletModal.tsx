@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { config } from "@/lib/config";
 import { MagicWalletModal } from "./MagicWalletModal";
+import { useModalA11y } from "@/hooks/useModalA11y";
 import posthog from "posthog-js";
 
 interface ConnectWalletModalProps {
@@ -30,6 +31,7 @@ interface ConnectWalletModalProps {
 type Choosing = "idle" | "freighter" | "lobstr" | "magic";
 
 export function ConnectWalletModal({ isOpen, onClose }: ConnectWalletModalProps) {
+  const { dialogRef, titleId } = useModalA11y(isOpen, onClose);
   const {
     isConnected,
     publicKey,
@@ -109,22 +111,33 @@ export function ConnectWalletModal({ isOpen, onClose }: ConnectWalletModalProps)
         <div
           className="absolute inset-0 bg-midnight-950/80 backdrop-blur-md animate-fade-in"
           onClick={onClose}
+          aria-hidden="true"
         />
 
         {/* Card */}
-        <div className="relative w-full max-w-md overflow-hidden rounded-3xl bg-white shadow-2xl shadow-black/50 animate-scale-in">
-          <div className="tribal-strip h-2" />
+        <div
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          data-testid="connect-wallet-modal"
+          tabIndex={-1}
+          className="relative w-full max-w-md overflow-hidden rounded-3xl bg-white shadow-2xl shadow-black/50 animate-scale-in outline-none"
+        >
+          <div className="tribal-strip h-2" aria-hidden="true" />
 
           {/* Header */}
           <div className="flex items-center justify-between p-6 pb-0">
-            <h2 className="font-display text-2xl font-bold text-midnight-900">
+            <h2 id={titleId} className="font-display text-2xl font-bold text-midnight-900">
               Connect <span className="text-brand-500">Wallet</span>
             </h2>
             <button
+              type="button"
               onClick={onClose}
-              className="rounded-full p-2 text-gray-400 hover:bg-gray-100 hover:text-midnight-900 transition-colors"
+              aria-label="Close wallet connection dialog"
+              className="rounded-full p-2 text-gray-700 hover:bg-gray-100 hover:text-midnight-900 transition-colors"
             >
-              <X size={20} />
+              <X size={20} aria-hidden="true" />
             </button>
           </div>
 

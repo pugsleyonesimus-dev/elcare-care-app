@@ -36,6 +36,7 @@ export function ListingCard({ listing, onPurchased }: ListingCardProps) {
   const [gatewayIndex, setGatewayIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [showCheckout, setShowCheckout] = useState(false);
+  const [purchaseSuccess, setPurchaseSuccess] = useState(false);
 
   // Resolve metadata from IPFS on mount.
   useEffect(() => {
@@ -71,10 +72,25 @@ export function ListingCard({ listing, onPurchased }: ListingCardProps) {
         onClose={() => setShowCheckout(false)} 
         listing={listing} 
         onCryptoPurchase={handleBuy}
-        onPurchased={onPurchased}
+        onPurchased={() => {
+          setPurchaseSuccess(true);
+          onPurchased?.();
+        }}
         isBuyingCrypto={isBuying}
       />
-      <div className="group flex flex-col overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm hover:shadow-md transition-shadow">
+      {purchaseSuccess && (
+        <p
+          data-testid="purchase-success"
+          role="status"
+          className="sr-only"
+        >
+          Purchase successful
+        </p>
+      )}
+      <div
+        data-testid={`listing-card-${listing.listing_id}`}
+        className="group flex flex-col overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm hover:shadow-md transition-shadow"
+      >
       {/* Image */}
       <Link href={`/listings/${listing.listing_id}`}>
         <div className="relative aspect-square overflow-hidden bg-brand-50">
@@ -147,6 +163,7 @@ export function ListingCard({ listing, onPurchased }: ListingCardProps) {
 
           {listing.status === "Active" && (
             <GuardButton
+              data-testid="buy-now-button"
               onAction={() => setShowCheckout(true)}
               disabled={isBuying || isOwn}
               actionName="To purchase this artwork"

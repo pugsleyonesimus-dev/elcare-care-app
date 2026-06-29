@@ -10,6 +10,7 @@ declare global {
   interface Window {
     __E2E_GET_LISTINGS__?: () => Listing[];
     __E2E_RESET_LISTINGS__?: () => void;
+    __E2E_UPSERT_LISTING__?: (listing: Listing) => void;
   }
 }
 
@@ -30,6 +31,14 @@ export function registerE2eMockListingsOnWindow(): void {
   if (typeof window === "undefined") return;
   window.__E2E_GET_LISTINGS__ = getE2eMockListings;
   window.__E2E_RESET_LISTINGS__ = resetE2eMockListings;
+  window.__E2E_UPSERT_LISTING__ = e2eMockUpsertListing;
+}
+
+export function e2eMockUpsertListing(listing: Listing): void {
+  listings.set(listing.listing_id, listing);
+  if (listing.listing_id >= nextListingId) {
+    nextListingId = listing.listing_id + 1;
+  }
 }
 
 export function e2eMockCreateListing(

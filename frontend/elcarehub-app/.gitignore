@@ -1,3 +1,6 @@
 # Playwright
 /playwright-report/
 /test-results/
+
+# Jest coverage
+/coverage/

@@ -4,7 +4,7 @@ import { createContext, useContext, ReactNode, useMemo, useCallback, useEffect, 
 import { useWallet, WalletState, WalletStatus } from "@/hooks/useWallet";
 import { useMagicWallet, MagicWalletState } from "@/hooks/useMagicWallet";
 import { useLobstrWallet } from "@/hooks/useLobstrWallet";
-import { saveWalletProvider, loadWalletProvider, clearWalletProvider, WalletProvider } from "@/lib/wallet-persistence";
+import { saveWalletProvider, loadWalletProvider, clearWalletProvider } from "@/lib/wallet-persistence";
 
 export type WalletType = "freighter" | "lobstr" | "magic" | null;
 
