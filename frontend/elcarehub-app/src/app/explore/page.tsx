@@ -14,9 +14,6 @@ import { ListingCardSkeleton } from "@/components/Skeletons";
 import {
   ChevronLeft,
   ChevronRight,
-  Package,
-  AlertCircle,
-  RefreshCw,
 } from "lucide-react";
 import { SearchFilter, Filters, SortOption } from "@/components/SearchFilter";
 import { fetchMetadata, ArtworkMetadata } from "@/lib/ipfs";
@@ -192,6 +189,8 @@ export default function ExplorePage() {
   const activeCnt = allListings.filter((l) => l.status === "Active").length;
   const soldCnt = allListings.filter((l) => l.status === "Sold").length;
 
+  const hasActiveFilters = filters.search !== "" || filters.status !== "All" || filters.category !== "All" || filters.minPrice !== "" || filters.maxPrice !== "";
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -270,26 +269,7 @@ export default function ExplorePage() {
         )}
 
         {/* Error state */}
-        {error && (
-          <div className="flex flex-col items-center justify-center py-20">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-red-50 text-red-500 mb-4">
-              <AlertCircle size={32} />
-            </div>
-            <h3 className="font-display font-bold text-gray-900 text-lg">
-              Failed to load listings
-            </h3>
-            <p className="mt-1 text-sm text-gray-500 max-w-sm text-center">
-              {error}
-            </p>
-            <button
-              onClick={load}
-              className="mt-6 flex items-center gap-2 rounded-xl bg-brand-500 px-6 py-2.5 text-sm font-bold text-white hover:bg-brand-600 transition-all"
-            >
-              <RefreshCw size={14} />
-              Try Again
-            </button>
-          </div>
-        )}
+        {error && <ErrorState title="Failed to load listings" message={error} onRetry={load} />}
 
         {/* Loading state */}
         {isLoading && !error && (
@@ -300,38 +280,28 @@ export default function ExplorePage() {
           </div>
         )}
 
-        {/* Empty state */}
+        {/* Empty / No Results state */}
         {!isLoading && !error && filtered.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-20">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-50 text-brand-500 mb-4">
-              <Package size={32} />
-            </div>
-            <h3 className="font-display font-bold text-gray-900 text-lg">
-              No artworks found
-            </h3>
-            <p className="mt-1 text-sm text-gray-500 max-w-sm text-center">
-              {filters.search
-                ? "Try adjusting your search or filters to find what you are looking for."
-                : "No listings match the current filters. Check back soon for new artworks."}
-            </p>
-            {(filters.search || filters.status !== "All" || filters.category !== "All") && (
-              <button
-                onClick={() => {
-                  setFilters({
-                    search: "",
-                    status: "All",
-                    category: "All",
-                    minPrice: "",
-                    maxPrice: "",
-                    sort: "newest",
-                  });
-                }}
-                className="mt-6 flex items-center gap-2 rounded-xl bg-brand-500 px-6 py-2.5 text-sm font-bold text-white hover:bg-brand-600 transition-all"
-              >
-                Clear Filters
-              </button>
-            )}
-          </div>
+          hasActiveFilters ? (
+            <NoResults
+              message="Try adjusting your search or filters to find what you are looking for."
+              onClearFilters={() => {
+                setFilters({
+                  search: "",
+                  status: "All",
+                  category: "All",
+                  minPrice: "",
+                  maxPrice: "",
+                  sort: "newest",
+                });
+              }}
+            />
+          ) : (
+            <EmptyState
+              title="No artworks found"
+              description="No listings match the current filters. Check back soon for new artworks."
+            />
+          )
         )}
 
         {/* Listings grid */}

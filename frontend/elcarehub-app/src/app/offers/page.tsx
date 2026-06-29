@@ -11,6 +11,7 @@ import { useOffererOffers, useWithdrawOffer } from "@/hooks/useOffers";
 import { stroopsToXlm, Offer } from "@/lib/contract";
 import { ShoppingBag, Clock, CheckCircle, XCircle, ArrowUpRight, History, Activity, TrendingUp, Loader2, Inbox, CalendarClock } from "lucide-react";
 import { WalletGuard } from "@/components/WalletGuard";
+import { ErrorState, EmptyState } from "@/components/PageStates";
 import { SUPPORTED_TOKENS } from "@/config/tokens";
 import { clsx } from "clsx";
 
@@ -161,43 +162,31 @@ export default function OffersPage() {
             ))}
           </div>
 
-          {/* Error banners */}
-          {(error || withdrawError) && (
-            <div className="mb-8 rounded-3xl border border-terracotta-500/20 bg-terracotta-500/5 px-6 py-4 text-sm font-bold text-terracotta-400 backdrop-blur-md flex items-center gap-3 animate-fade-in">
-              <XCircle size={20} />
-              {error || withdrawError}
-            </div>
-          )}
-
           {/* Content area */}
           <div className="animate-fade-in duration-700">
-            {isLoading ? (
+            {(error || withdrawError) ? (
+              <ErrorState
+                title="Failed to load offers"
+                message={error || withdrawError || ""}
+                onRetry={refresh}
+              />
+            ) : isLoading ? (
               <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
                 {[1, 2, 3].map((i) => (
                   <div key={i} className="h-64 animate-pulse rounded-[2.5rem] bg-white/[0.03] border border-white/5" />
                 ))}
               </div>
             ) : filtered.length === 0 ? (
-              <div className="flex flex-col items-center justify-center rounded-[3.5rem] bg-midnight-900/50 border-2 border-dashed border-white/5 py-32 px-10 text-center backdrop-blur-sm relative overflow-hidden group">
-                <div className="absolute inset-0 tribal-pattern opacity-[0.02] group-hover:opacity-[0.04] transition-opacity duration-500" />
-                <div className="relative mb-10 flex h-28 w-28 items-center justify-center rounded-[2.5rem] bg-midnight-950 text-white/10 shadow-inner group-hover:text-brand-500/30 transition-colors duration-500">
-                  <ShoppingBag size={48} />
-                </div>
-                <h3 className="font-display text-3xl font-bold text-white tracking-tight relative z-10">
-                  {tab === "all" ? "No offers yet." : `No ${tab.toLowerCase()} offers.`}
-                </h3>
-                <p className="mt-4 max-w-sm text-sm text-brand-300/40 leading-relaxed font-medium relative z-10">
-                  Your offers help secure the most beautiful African art pieces.
-                </p>
-                {tab === "all" && (
-                  <Link
-                    href="/"
-                    className="mt-8 rounded-2xl bg-brand-500 px-8 py-3.5 text-lg font-bold text-white hover:bg-brand-600 shadow-xl shadow-brand-500/20 transition-all hover:scale-[1.02] relative z-10"
-                  >
-                    Browse listings
-                  </Link>
-                )}
-              </div>
+              <EmptyState
+                icon={ShoppingBag}
+                title={tab === "all" ? "No offers yet." : `No ${tab.toLowerCase()} offers.`}
+                description="Your offers help secure the most beautiful African art pieces."
+                action={tab === "all" ? { label: "Browse listings", href: "/" } : undefined}
+                className="rounded-[3.5rem] bg-midnight-900/50 border-2 border-dashed border-white/5 backdrop-blur-sm relative"
+                iconClassName="bg-midnight-950 text-white/10 shadow-inner"
+                titleClassName="text-white"
+                descriptionClassName="text-brand-300/40"
+              />
             ) : (
               <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
                 {filtered.map((o) => (

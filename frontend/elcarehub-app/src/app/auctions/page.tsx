@@ -15,9 +15,7 @@ import {
   Gavel,
   Clock,
   Trophy,
-  Package,
   RefreshCw,
-  AlertCircle,
 } from "lucide-react";
 
 type Tab = "all" | "Active" | "Finalized" | "Cancelled";
@@ -278,26 +276,7 @@ export default function AuctionsPage() {
       {/* Content */}
       <div className="mx-auto max-w-7xl px-4 sm:px-6 py-8">
         {/* Error state */}
-        {error && (
-          <div className="flex flex-col items-center justify-center py-20">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-red-50 text-red-500 mb-4">
-              <AlertCircle size={32} />
-            </div>
-            <h3 className="font-display font-bold text-gray-900 text-lg">
-              Failed to load auctions
-            </h3>
-            <p className="mt-1 text-sm text-gray-500 max-w-sm text-center">
-              {error}
-            </p>
-            <button
-              onClick={refresh}
-              className="mt-6 flex items-center gap-2 rounded-xl bg-brand-500 px-6 py-2.5 text-sm font-bold text-white hover:bg-brand-600 transition-all"
-            >
-              <RefreshCw size={14} />
-              Try Again
-            </button>
-          </div>
-        )}
+        {error && <ErrorState title="Failed to load auctions" message={error} onRetry={refresh} />}
 
         {/* Loading skeletons */}
         {isLoading && !error && (
@@ -308,29 +287,20 @@ export default function AuctionsPage() {
           </div>
         )}
 
-        {/* Empty state */}
+        {/* Empty / No Results state */}
         {!isLoading && !error && filtered.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-20">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-50 text-brand-500 mb-4">
-              <Package size={32} />
-            </div>
-            <h3 className="font-display font-bold text-gray-900 text-lg">
-              No auctions found
-            </h3>
-            <p className="mt-1 text-sm text-gray-500 max-w-sm text-center">
-              {tab === "all"
-                ? "No auctions have been created yet. Check back soon!"
-                : `No ${tab.toLowerCase()} auctions at the moment.`}
-            </p>
-            {tab !== "all" && (
-              <button
-                onClick={() => setTab("all")}
-                className="mt-6 flex items-center gap-2 rounded-xl bg-brand-500 px-6 py-2.5 text-sm font-bold text-white hover:bg-brand-600 transition-all"
-              >
-                View All Auctions
-              </button>
-            )}
-          </div>
+          tab !== "all" ? (
+            <EmptyState
+              title={`No ${tab.toLowerCase()} auctions`}
+              description={`No ${tab.toLowerCase()} auctions at the moment.`}
+              action={{ label: "View All Auctions", onClick: () => setTab("all") }}
+            />
+          ) : (
+            <EmptyState
+              title="No auctions found"
+              description="No auctions have been created yet. Check back soon!"
+            />
+          )
         )}
 
         {/* Auction grid */}
