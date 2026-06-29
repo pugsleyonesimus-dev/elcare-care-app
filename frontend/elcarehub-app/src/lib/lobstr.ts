@@ -1,4 +1,4 @@
-﻿// -------------------------------------------------------------
+// -------------------------------------------------------------
 // lib/lobstr.ts - Lobstr browser wallet helpers
 // Uses @lobstrco/signer-extension-api v2
 // Dynamic imports used to prevent SSR crashes in Next.js
@@ -30,12 +30,21 @@ export async function isLobstrInstalled(): Promise<boolean> {
  * v2 API: just call getPublicKey() directly - the extension handles permission prompts.
  */
 export async function connectLobstr(): Promise<LobstrAccount> {
-  const { getPublicKey } = await getLobstrApi();
-  const publicKey = await getPublicKey();
-  if (!publicKey || typeof publicKey !== "string") {
-    throw new Error("Failed to get public key from Lobstr.");
+  try {
+    const installed = await isLobstrInstalled();
+    if (!installed) {
+      throw new Error("Lobstr extension not found. Please install the Lobstr Signer extension from the Chrome Web Store.");
+    }
+    const { getPublicKey } = await getLobstrApi();
+    const publicKey = await getPublicKey();
+    if (!publicKey || typeof publicKey !== "string") {
+      throw new Error("Failed to get public key from Lobstr. Ensure your wallet is unlocked.");
+    }
+    return { publicKey };
+  } catch (err: unknown) {
+    if (err instanceof Error) throw err;
+    throw new Error("An unexpected error occurred while connecting to Lobstr.");
   }
-  return { publicKey };
 }
 
 /**
