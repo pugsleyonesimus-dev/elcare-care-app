@@ -485,4 +485,84 @@ router.get('/events', (req: Request, res: Response) => {
     });
 });
 
+// ── GET /artists/:address/metrics ─────────────────────────────────────────────
+// Returns mints-over-time, volume-over-time, and conversion rate aggregates
+// for a given artist, scoped by an optional ?range=day|week|month query param.
+
+router.get('/artists/:address/metrics', cacheMiddleware(60), async (req: Request, res: Response, next: NextFunction) => {
+  const address = req.params.address as string;
+  const range = req.query.range as string | undefined;
+
+  const now = new Date();
+  let dateFrom: Date | undefined;
+  if (range === 'day')   dateFrom = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  else if (range === 'week')  dateFrom = new Date(now.getTime() - 7  * 24 * 60 * 60 * 1000);
+  else if (range === 'month') dateFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+  try {
+    const timeWhere = dateFrom ? { createdAt: { gte: dateFrom } } : {};
+
+    // Total listings created by artist in range (proxy for mints)
+    const totalListings = await prisma.listing.count({
+      where: { artist: address, ...timeWhere },
+    });
+
+    // Sales (sold listings)
+    const totalSales = await prisma.listing.count({
+      where: { artist: address, status: 'Sold', ...timeWhere },
+    });
+
+    // Volume (sum of sold listing prices in range)
+    const volumeResult = await prisma.listing.aggregate({
+      _sum: { price: true },
+      where: { artist: address, status: 'Sold', ...timeWhere },
+    });
+    const totalVolume = volumeResult._sum.price?.toString() ?? '0';
+
+    // Unique buyers
+    const soldListings = await prisma.listing.findMany({
+      where: { artist: address, status: 'Sold', owner: { not: null }, ...timeWhere },
+      select: { owner: true },
+    });
+    const uniqueBuyers = new Set(soldListings.map((l) => l.owner)).size;
+
+    // Conversion rate: sales / listings (0 if no listings)
+    const conversionRate = totalListings > 0
+      ? Number((totalSales / totalListings).toFixed(4))
+      : 0;
+
+    // Mints over time: group sold ARTWORK_SOLD events by day
+    const soldEvents = await prisma.marketplaceEvent.findMany({
+      where: {
+        actor: address,
+        eventType: 'ARTWORK_SOLD',
+        ...(dateFrom ? { ledgerTimestamp: { gte: dateFrom } } : {}),
+      },
+      select: { ledgerTimestamp: true },
+      orderBy: { ledgerTimestamp: 'asc' },
+    });
+
+    // Bucket events by ISO date (YYYY-MM-DD)
+    const salesByDay: Record<string, number> = {};
+    for (const ev of soldEvents) {
+      const day = ev.ledgerTimestamp.toISOString().slice(0, 10);
+      salesByDay[day] = (salesByDay[day] ?? 0) + 1;
+    }
+    const salesTimeline = Object.entries(salesByDay).map(([date, count]) => ({ date, count }));
+
+    res.json({
+      address,
+      range: range ?? 'all',
+      totalListings,
+      totalSales,
+      totalVolume,
+      uniqueBuyers,
+      conversionRate,
+      salesTimeline,
+    });
+  } catch (err) {
+    next(internalError('Failed to fetch artist metrics'));
+  }
+});
+
 export default router;

@@ -1,5 +1,18 @@
 name: Soroban CI
 
+# ── Required status checks (branch protection) ────────────────────────────────
+# To protect `main`, go to Settings → Branches → Branch protection rules and
+# enable "Require status checks to pass before merging". Add these check names:
+#   • "Build and Test Contracts"
+#   • "Build and Test Frontend (20)"
+#   • "Build and Test Frontend (22)"
+#   • "Build and Test Indexer (20)"
+#   • "Build and Test Indexer (22)"
+#   • "Secret Scanning (Gitleaks)"
+#   • "Dependency Scanning"
+# Each job name above maps to a distinct GitHub status check.
+# ─────────────────────────────────────────────────────────────────────────────
+
 on:
   push:
     branches: [ "master", "main" ]
@@ -50,6 +63,28 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Cache frontend node_modules (audit)
+        uses: actions/cache@v4
+        with:
+          path: frontend/elcarehub-app/node_modules
+          key: ${{ runner.os }}-node-20-${{ hashFiles('frontend/elcarehub-app/package-lock.json') }}
+          restore-keys: ${{ runner.os }}-node-20-
+
+      - name: Cache indexer node_modules (audit)
+        uses: actions/cache@v4
+        with:
+          path: indexer/node_modules
+          key: ${{ runner.os }}-indexer-20-${{ hashFiles('indexer/package-lock.json') }}
+          restore-keys: ${{ runner.os }}-indexer-20-
+
+      - name: Install frontend deps
+        run: npm ci
+        working-directory: frontend/elcarehub-app
+
+      - name: Install indexer deps
+        run: npm ci
+        working-directory: indexer
 
       # Fails the build on high/critical npm advisories.
       # To triage a finding run: npm audit --audit-level=high
