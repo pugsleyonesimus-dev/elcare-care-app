@@ -11,7 +11,7 @@ const RETRY_DELAY_MS = 500;
 
 export interface ActivityEvent {
   id: string;
-  type: "PURCHASE" | "LISTED" | "CANCELLED" | "SALE" | "ROYALTY";
+  type: "PURCHASE" | "LISTED" | "CANCELLED" | "SALE" | "ROYALTY" | "OFFER_SUBMITTED" | "OFFER_ACCEPTED" | "TRANSFER";
   listing_id: number;
   title: string;
   price: string;
@@ -19,6 +19,12 @@ export interface ActivityEvent {
   from: string;
   to: string;
   tx_hash: string;
+}
+
+export interface ListingHistoryPage {
+  events: ActivityEvent[];
+  total: number;
+  hasMore: boolean;
 }
 
 interface RoyaltyStatsResponse {
@@ -154,6 +160,14 @@ function eventTypeToActivity(
       return "PURCHASE";
     case "LISTING_CANCELLED":
       return "CANCELLED";
+    case "OFFER_SUBMITTED":
+      return "OFFER_SUBMITTED";
+    case "OFFER_ACCEPTED":
+      return "OFFER_ACCEPTED";
+    case "TRANSFER":
+      return "TRANSFER";
+    case "ROYALTY_PAID":
+      return "ROYALTY";
     default:
       return "SALE";
   }
@@ -308,9 +322,65 @@ function mapListingHistoryEvent(
 }
 
 /**
- * Deployed collections from the indexer (Supplementary to on-chain `all_collections` when the indexer is synced).
+ * Fetches a paginated activity timeline for a specific marketplace listing.
+ * Returns events in ascending chronological order (oldest first).
+ *
+ * @param listingId  - The listing to query.
+ * @param offset     - Number of events to skip (default 0).
+ * @param limit      - Maximum events to return (default 20).
  */
-export async function getCollections(
+export async function getListingHistory(
+  listingId: number,
+  offset = 0,
+  limit = 20
+): Promise<ListingHistoryPage> {
+  const empty: ListingHistoryPage = { events: [], total: 0, hasMore: false };
+  if (!Number.isFinite(listingId)) return empty;
+  try {
+    const params = new URLSearchParams({
+      offset: String(offset),
+      limit: String(limit),
+    });
+    const raw = await fetchWithRetry<unknown>(
+      `/listings/${listingId}/history?${params.toString()}`
+    );
+
+    // Indexer may return an array or a paginated envelope { events, total }
+    let events: ActivityEvent[];
+    let total = 0;
+
+    if (Array.isArray(raw)) {
+      events = parseActivityList(raw).map((ev) =>
+        mapListingHistoryEvent(ev, listingId)
+      );
+      total = offset + events.length;
+    } else if (
+      raw !== null &&
+      typeof raw === "object" &&
+      Array.isArray((raw as any).events ?? (raw as any).data)
+    ) {
+      const r = raw as any;
+      const arr = r.events ?? r.data;
+      events = parseActivityList(arr).map((ev) =>
+        mapListingHistoryEvent(ev, listingId)
+      );
+      total = typeof r.total === "number" ? r.total : offset + events.length;
+    } else {
+      return empty;
+    }
+
+    return { events, total, hasMore: offset + events.length < total };
+  } catch (e) {
+    console.warn(
+      "[indexer] getListingHistory:",
+      e instanceof Error ? e.message : e
+    );
+    return empty;
+  }
+}
+
+/**
+ * Deployed collections from the indexer (Supplementary to on-chain `all_collections` when the indexer is synced).
   filter: CollectionFilter = {}
 ): Promise<{ collections: IndexerCollectionRow[]; total: number }> {
   const params = new URLSearchParams();

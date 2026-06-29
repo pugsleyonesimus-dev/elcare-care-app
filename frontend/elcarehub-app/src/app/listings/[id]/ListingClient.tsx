@@ -22,6 +22,8 @@ import { useBuyArtwork } from "@/hooks/useMarketplace";
 import { usePlaceBid } from "@/hooks/usePlaceBid";
 import { useListingOffers, useMakeOffer } from "@/hooks/useOffers";
 import { useListingActivity } from "@/hooks/useUserActivity";
+import { useListingHistory } from "@/hooks/useListingHistory";
+import { ProvenanceTimeline } from "@/components/ProvenanceTimeline";
 import { GuardButton } from "@/components/WalletGuard";
 import {
     ArrowLeft,
@@ -29,7 +31,6 @@ import {
     ShoppingCart,
     User,
     Calendar,
-    Tag,
     Hash,
     Clock,
     Gavel,
@@ -38,7 +39,6 @@ import {
     CheckCircle2,
     AlertCircle,
     TrendingUp,
-    Landmark,
     Share2,
     Copy,
     Check,
@@ -67,7 +67,9 @@ export default function ListingDetailPage({ id }: ListingClientProps) {
     const { buy, isBuying, error: buyError } = useBuyArtwork(publicKey);
     const { bid, isBidding, error: bidError } = usePlaceBid(publicKey);
     const { offers, isLoading: isLoadingOffers, refresh: refreshOffers } = useListingOffers(id ? Number(id) : null);
-    const { activities, isLoading: isLoadingActivity } = useListingActivity(id ? Number(id) : null);
+    // Keep useListingActivity call for existing mocks/consumers; history is now handled by useListingHistory
+    useListingActivity(id ? Number(id) : null);
+    const { events: historyEvents, isLoading: isLoadingHistory, isLoadingMore, error: historyError, hasMore, loadMore } = useListingHistory(id ? Number(id) : null);
 
     // Make Offer Hook and States
     const { make: makeOffer, isOffering, error: offerError } = useMakeOffer(publicKey);
@@ -331,41 +333,15 @@ export default function ListingDetailPage({ id }: ListingClientProps) {
                         )}
 
                         {activeTab === 'history' && (
-                            <div className="space-y-6 animate-fade-in max-h-80 overflow-y-auto pr-4 custom-scrollbar">
-                                {activities.length > 0 ? (
-                                    activities.map((evt, idx) => (
-                                        <div key={evt.id} className="flex gap-4 relative">
-                                            {idx !== activities.length - 1 && (
-                                                <div className="absolute left-[15px] top-8 bottom-[-24px] w-px bg-white/10" />
-                                            )}
-                                            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 z-10 ${evt.type === 'LISTED' ? 'bg-white/10 text-white' :
-                                                evt.type === 'PURCHASE' || evt.type === 'SALE' ? 'bg-mint-500/20 text-mint-400' :
-                                                    'bg-brand-500/20 text-brand-400'
-                                                }`}>
-                                                {evt.type === 'LISTED' && <Tag size={14} />}
-                                                {(evt.type === 'PURCHASE' || evt.type === 'SALE') && <ShoppingCart size={14} />}
-                                                {evt.type === 'ROYALTY' && <TrendingUp size={14} />}
-                                            </div>
-                                            <div className="flex-1 pb-6">
-                                                <div className="flex justify-between items-start">
-                                                    <p className="text-sm font-bold text-white leading-none mb-1 uppercase tracking-wider">{evt.type}</p>
-                                                    <span className="text-[10px] text-white/30 font-mono">{new Date(evt.timestamp).toLocaleDateString()}</span>
-                                                </div>
-                                                <p className="text-xs text-white/50 mb-2 italic">
-                                                    {evt.from.slice(0, 10)}… → {evt.to.slice(0, 10)}…
-                                                </p>
-                                                <div className="flex items-center gap-1.5 text-brand-400 font-bold text-sm">
-                                                    <Landmark size={12} /> {evt.price} XLM
-                                                </div>
-                                            </div>
-                                        </div>
-                                    ))
-                                ) : (
-                                    <div className="py-10 text-center text-white/30">
-                                        <History size={40} className="mx-auto mb-4 opacity-20" />
-                                        <p className="italic">No activity recorded yet</p>
-                                    </div>
-                                )}
+                            <div className="animate-fade-in max-h-[28rem] overflow-y-auto pr-2 custom-scrollbar">
+                                <ProvenanceTimeline
+                                    events={historyEvents}
+                                    isLoading={isLoadingHistory}
+                                    isLoadingMore={isLoadingMore}
+                                    error={historyError}
+                                    hasMore={hasMore}
+                                    onLoadMore={loadMore}
+                                />
                             </div>
                         )}
 
