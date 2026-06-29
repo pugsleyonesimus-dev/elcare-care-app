@@ -41,7 +41,8 @@ app.use(express.json());
 // Apply global baseline rate limiter to all public endpoints
 app.use(globalRateLimiter);
 
-// Track response time metrics for all routes
+// Request logging and metrics
+app.use(requestLogger);
 app.use(metricsMiddleware);
 
 // Expose /metrics for Prometheus scrapers (bypass rate limit via skip in globalRateLimiter)

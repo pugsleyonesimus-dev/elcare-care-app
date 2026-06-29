@@ -456,4 +456,33 @@ router.get('/stats', validateQuery(statsQuerySchema), async (req: Request, res: 
   }
 });
 
+// GET /events — Server-Sent Events stream with keep-alive heartbeats
+router.get('/events', (req: Request, res: Response) => {
+    // Check connection limit
+    if (sseClients.size >= MAX_SSE_CONNECTIONS) {
+        return res.status(503).json({ error: 'Too many SSE connections' });
+    }
+
+    // Setup SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    // Setup heartbeat
+    setupSSEHeartbeat(res);
+
+    // Send initial connection message
+    res.write(`data: ${JSON.stringify({ type: 'CONNECTED' })}\n\n`);
+
+    // Cleanup on disconnect
+    res.on('close', () => {
+        cleanupSSEClient(res);
+    });
+
+    res.on('error', () => {
+        cleanupSSEClient(res);
+    });
+});
+
 export default router;

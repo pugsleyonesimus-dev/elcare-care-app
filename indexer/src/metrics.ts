@@ -39,6 +39,25 @@ export const httpRequestDurationMicroseconds = new client.Histogram({
   buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
 });
 
+// Request logging middleware
+export function requestLogger(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const startTime = Date.now();
+
+  res.on('finish', () => {
+    const latency = Date.now() - startTime;
+    const statusClass = res.statusCode < 400 ? '2xx/3xx' : res.statusCode < 500 ? '4xx' : '5xx';
+    
+    // Skip logging for health checks and metrics
+    if (req.path !== '/health' && req.path !== '/metrics' && req.path !== '/readyz') {
+      console.log(
+        `${req.method} ${req.path} ${res.statusCode} ${latency}ms`
+      );
+    }
+  });
+
+  next();
+}
+
 // Middleware to track HTTP response times
 export function metricsMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
   const start = process.hrtime();

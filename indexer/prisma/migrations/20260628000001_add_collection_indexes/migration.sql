@@ -1,0 +1,2 @@
+-- Issue #076: Collection indexes are created in 20260628000000_add_composite_indexes
+-- This file exists for clarity that the indexes are applied

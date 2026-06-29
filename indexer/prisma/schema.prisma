@@ -34,6 +34,10 @@ model Listing {
   @@index([artist])
   @@index([status])
   @@index([updatedAtLedger])
+  @@index([status, updatedAtLedger])
+  @@index([artist, updatedAtLedger])
+  @@index([collection])
+  @@index([collection, status])
 }
 
 model Auction {
