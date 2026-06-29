@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { loadConfig } from '../config';
+import { loadConfig, validateRequiredEnv } from '../config';
+
+// ── loadConfig ────────────────────────────────────────────────────────────────
 
 describe('loadConfig', () => {
   const ORIGINAL = { ...process.env };
@@ -67,5 +69,70 @@ describe('loadConfig', () => {
   it('throws a descriptive error for fractional MAX_LEDGERS_PER_CYCLE', () => {
     process.env.MAX_LEDGERS_PER_CYCLE = '2.5';
     expect(() => loadConfig()).toThrow('MAX_LEDGERS_PER_CYCLE');
+  });
+});
+
+// ── validateRequiredEnv ───────────────────────────────────────────────────────
+
+describe('validateRequiredEnv', () => {
+  const REQUIRED: Record<string, string> = {
+    DATABASE_URL: 'postgresql://localhost/test',
+    MARKETPLACE_CONTRACT_ID: 'C_MARKETPLACE',
+    REDIS_URL: 'redis://localhost:6379',
+    STELLAR_RPC_URL: 'https://soroban-testnet.stellar.org',
+    STELLAR_NETWORK: 'testnet',
+  };
+
+  const ORIGINAL = { ...process.env };
+
+  beforeEach(() => {
+    Object.entries(REQUIRED).forEach(([k, v]) => { process.env[k] = v; });
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL };
+  });
+
+  it('does not throw when all required variables are set', () => {
+    expect(() => validateRequiredEnv()).not.toThrow();
+  });
+
+  it('throws when DATABASE_URL is missing', () => {
+    delete process.env.DATABASE_URL;
+    expect(() => validateRequiredEnv()).toThrow('DATABASE_URL');
+  });
+
+  it('throws when MARKETPLACE_CONTRACT_ID is missing', () => {
+    delete process.env.MARKETPLACE_CONTRACT_ID;
+    expect(() => validateRequiredEnv()).toThrow('MARKETPLACE_CONTRACT_ID');
+  });
+
+  it('throws when REDIS_URL is missing', () => {
+    delete process.env.REDIS_URL;
+    expect(() => validateRequiredEnv()).toThrow('REDIS_URL');
+  });
+
+  it('throws when STELLAR_RPC_URL is missing', () => {
+    delete process.env.STELLAR_RPC_URL;
+    expect(() => validateRequiredEnv()).toThrow('STELLAR_RPC_URL');
+  });
+
+  it('throws when STELLAR_NETWORK is missing', () => {
+    delete process.env.STELLAR_NETWORK;
+    expect(() => validateRequiredEnv()).toThrow('STELLAR_NETWORK');
+  });
+
+  it('throws an aggregated error listing all missing variables', () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.MARKETPLACE_CONTRACT_ID;
+    let caught: Error | null = null;
+    try {
+      validateRequiredEnv();
+    } catch (e) {
+      caught = e as Error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught!.message).toContain('DATABASE_URL');
+    expect(caught!.message).toContain('MARKETPLACE_CONTRACT_ID');
   });
 });

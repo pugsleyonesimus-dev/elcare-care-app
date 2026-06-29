@@ -1,3 +1,4 @@
+import { initSentry, Sentry } from './sentry.js';
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
@@ -9,9 +10,14 @@ import { rateLimiter } from './api/rate-limit-middleware.js';
 import { metricsMiddleware, handleMetrics } from './metrics.js';
 import { errorHandler } from './api/errors.js';
 import { startReconciler } from './reconciler.js';
+import { validateRequiredEnv } from './config.js';
 import prisma from './db.js';
 
 dotenv.config();
+
+// Initialise Sentry before the Express app is constructed so it can instrument
+// framework integrations automatically. No-op when SENTRY_DSN is not set.
+initSentry();
 
 // Load OpenAPI spec
 const __filename = fileURLToPath(import.meta.url);
@@ -20,9 +26,11 @@ const openapiPath = path.join(__dirname, '..', 'openapi.yaml');
 const openapiFile = fs.readFileSync(openapiPath, 'utf8');
 const swaggerDoc = yaml.parse(openapiFile);
 
-// Fail fast — refuse to start if the contract ID is missing.
-if (!process.env.MARKETPLACE_CONTRACT_ID) {
-  logger.error('MARKETPLACE_CONTRACT_ID is not set — exiting');
+// Fail fast — refuse to start if any required environment variable is missing.
+try {
+  validateRequiredEnv();
+} catch (err) {
+  console.error((err as Error).message);
   process.exit(1);
 }
 
@@ -53,6 +61,10 @@ app.use(rateLimiter);
 
 // API Routes
 app.use('/', routes);
+
+// Sentry error handler must be registered before the custom error handler so
+// that it receives the error object before it is serialised into an HTTP response.
+Sentry.setupExpressErrorHandler(app);
 
 // Central error handler — must be registered after all routes
 app.use(errorHandler);

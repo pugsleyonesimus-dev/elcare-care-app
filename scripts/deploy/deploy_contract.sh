@@ -4,23 +4,45 @@
 # Builds, optimises, and deploys the Soroban marketplace
 # contract to Stellar Testnet.
 # Requires: fund_account.sh to have been run first.
+#
+# Usage: ./deploy_contract.sh [--dry-run] [--help]
+#
+# Flags:
+#   --dry-run   Validate prerequisites and print what would
+#               happen, but make no on-chain changes.
+#   --help      Show this message and exit.
 # ============================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env.deploy"
+DEPLOYED_IDS="$SCRIPT_DIR/deployed_ids.env"
 CONTRACT_DIR="$REPO_ROOT/contracts/soroban-marketplace"
 WASM_LOCAL="$CONTRACT_DIR/target/wasm32v1-none/release/soroban_marketplace.wasm"
 WASM_WORKSPACE="$REPO_ROOT/target/wasm32v1-none/release/soroban_marketplace.wasm"
 WASM="$WASM_WORKSPACE"
-FRONTEND_ENV="$REPO_ROOT/frontend/ELCARE-HUB-app/.env.local"
+FRONTEND_ENV="$REPO_ROOT/frontend/elcarehub-app/.env.local"
+DRY_RUN=false
+
+usage() {
+  grep '^#' "$0" | grep -v '^#!/' | sed 's/^# \{0,1\}//'
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=true ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "ERROR: Unknown flag: $arg"; usage; exit 1 ;;
+  esac
+done
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  ELCARE-HUB — Deploy Soroban Contract to Testnet"
+if $DRY_RUN; then echo "  (DRY RUN — no on-chain changes will be made)"; fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# ── Check prerequisities ─────────────────────────────────────
+# ── Check prerequisites ─────────────────────────────────────
 for cmd in stellar cargo jq; do
   if ! command -v "$cmd" &>/dev/null; then
     echo "ERROR: '$cmd' is not installed."
@@ -35,6 +57,23 @@ fi
 
 # shellcheck disable=SC1090
 source "$ENV_FILE"
+
+for var in STELLAR_SECRET STELLAR_PUBLIC RPC_URL NETWORK; do
+  if [[ -z "${!var:-}" ]]; then
+    echo "ERROR: $var is not set in $ENV_FILE. Run ./fund_account.sh to regenerate."
+    exit 1
+  fi
+done
+
+if $DRY_RUN; then
+  echo "DRY RUN: Prerequisites OK."
+  echo "DRY RUN: Would build $CONTRACT_DIR"
+  echo "DRY RUN: Would install WASM to $NETWORK via $RPC_URL"
+  echo "DRY RUN: Would deploy contract and write IDs to:"
+  echo "         $DEPLOYED_IDS"
+  echo "         $FRONTEND_ENV"
+  exit 0
+fi
 
 # ── Build WASM ────────────────────────────────────────────────
 echo ""
@@ -87,6 +126,18 @@ CONTRACT_ID=$(stellar contract deploy \
   --ignore-checks 2>&1 | tail -1)
 echo "  Contract ID: $CONTRACT_ID"
 
+# ── Write machine-readable deployed IDs ──────────────────────
+cat > "$DEPLOYED_IDS" <<EOF
+# ELCARE-HUB Deployed Contract IDs
+# Generated $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# Source this file or read it downstream to wire up services.
+MARKETPLACE_CONTRACT_ID=$CONTRACT_ID
+MARKETPLACE_WASM_HASH=$WASM_HASH
+NETWORK=$NETWORK
+RPC_URL=$RPC_URL
+EOF
+echo "  Deployed IDs written to $DEPLOYED_IDS"
+
 # ── Write frontend .env.local ────────────────────────────────
 mkdir -p "$(dirname "$FRONTEND_ENV")"
 
@@ -129,7 +180,8 @@ echo ""
 echo "  Contract ID : $CONTRACT_ID"
 echo "  Network     : $NETWORK"
 echo ""
-echo "  Frontend env written to: $FRONTEND_ENV"
+echo "  Machine-readable IDs : $DEPLOYED_IDS"
+echo "  Frontend env written  : $FRONTEND_ENV"
 echo "  Add your PINATA_JWT to that file, then:"
-echo "    cd frontend/ELCARE-HUB-app && npm install && npm run dev"
+echo "    cd frontend/elcarehub-app && npm install && npm run dev"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
