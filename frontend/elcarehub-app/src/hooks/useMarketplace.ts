@@ -25,6 +25,7 @@ import {
 import { getReadableErrorMessage } from "@/lib/errors";
 import { config } from "@/lib/config";
 import { useTransientErrorToast } from "./useTransientErrorToast";
+import { useTxToast } from "./useTxToast";
 import { assertSupportedTokenAddress } from "@/lib/token-support";
 import { trackEvent } from "@/providers/PostHogProvider";
 
@@ -160,6 +161,7 @@ export function useCreateListing(artistPublicKey: string | null) {
   const [progress, setProgress] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   useTransientErrorToast(error);
+  const { run } = useTxToast();
 
   const create = useCallback(
     async (input: CreateListingInput): Promise<number | null> => {
@@ -178,16 +180,22 @@ export function useCreateListing(artistPublicKey: string | null) {
           "listing",
         );
 
-        // Step 1: Call the Soroban contract.
+        // Step 1: Call the Soroban contract via useTxToast.
         setProgress("Creating on-chain listing…");
-        const listingId = await createListing(
-          artistPublicKey,
-          input.price,
-          token.address,
-          input.collectionAddress,
-          input.nftTokenId,
-          input.recipients ?? []
+        const listingId = await run(
+          () =>
+            createListing(
+              artistPublicKey,
+              input.price,
+              token.address,
+              input.collectionAddress,
+              input.nftTokenId,
+              input.recipients ?? []
+            ),
+          { action: "Listing" }
         );
+
+        if (listingId === null) return null;
 
         // Track successful listing creation
         trackEvent.listingCreated(
@@ -205,7 +213,7 @@ export function useCreateListing(artistPublicKey: string | null) {
         setIsCreating(false);
       }
     },
-    [artistPublicKey],
+    [artistPublicKey, run],
   );
 
   return { create, isCreating, progress, error };
@@ -214,73 +222,51 @@ export function useCreateListing(artistPublicKey: string | null) {
 // ── useBuyArtwork ─────────────────────────────────────────────
 
 export function useBuyArtwork(buyerPublicKey: string | null) {
-  const [isBuying, setIsBuying] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useTransientErrorToast(error);
+  const { run, isRunning: isBuying } = useTxToast();
 
   const buy = useCallback(
     async (listingId: number): Promise<boolean> => {
-      if (!buyerPublicKey) {
-        setError("Wallet not connected");
-        return false;
-      }
-      setIsBuying(true);
-      setError(null);
-      try {
-        // Get listing details for tracking
-        const listing = await getListing(listingId);
-        await buyArtwork(buyerPublicKey, listingId);
-
-        // Track successful purchase
-        trackEvent.purchaseSuccessful(
-          listingId,
-          stroopsToXlm(listing.price),
-          listing.currency || "XLM",
-        );
-
-        return true;
-      } catch (err: unknown) {
-        setError(getReadableErrorMessage(err, "Purchase failed"));
-        return false;
-      } finally {
-        setIsBuying(false);
-      }
+      if (!buyerPublicKey) return false;
+      const result = await run(
+        async () => {
+          const listing = await getListing(listingId);
+          await buyArtwork(buyerPublicKey, listingId);
+          // Track successful purchase
+          trackEvent.purchaseSuccessful(
+            listingId,
+            stroopsToXlm(listing.price),
+            listing.currency || "XLM",
+          );
+          return true;
+        },
+        { action: "Purchase" }
+      );
+      return result !== null && result === true;
     },
-    [buyerPublicKey],
+    [buyerPublicKey, run],
   );
 
-  return { buy, isBuying, error };
+  return { buy, isBuying, error: null };
 }
 
 // ── useCancelListing ──────────────────────────────────────────
 
 export function useCancelListing(artistPublicKey: string | null) {
-  const [isCancelling, setIsCancelling] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useTransientErrorToast(error);
+  const { run, isRunning: isCancelling } = useTxToast();
 
   const cancel = useCallback(
     async (listingId: number): Promise<boolean> => {
-      if (!artistPublicKey) {
-        setError("Wallet not connected");
-        return false;
-      }
-      setIsCancelling(true);
-      setError(null);
-      try {
-        await cancelListing(artistPublicKey, listingId);
-        return true;
-      } catch (err: unknown) {
-        setError(getReadableErrorMessage(err, "Cancel failed"));
-        return false;
-      } finally {
-        setIsCancelling(false);
-      }
+      if (!artistPublicKey) return false;
+      const result = await run(
+        () => cancelListing(artistPublicKey, listingId),
+        { action: "Cancel listing" }
+      );
+      return result !== null;
     },
-    [artistPublicKey],
+    [artistPublicKey, run],
   );
 
-  return { cancel, isCancelling, error };
+  return { cancel, isCancelling, error: null };
 }
 
 // ── useUpdateListing ──────────────────────────────────────────
@@ -306,6 +292,7 @@ export function useUpdateListing(artistPublicKey: string | null) {
   const [progress, setProgress] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   useTransientErrorToast(error);
+  const { run } = useTxToast();
 
   const update = useCallback(
     async (input: UpdateListingInput): Promise<boolean> => {
@@ -359,18 +346,24 @@ export function useUpdateListing(artistPublicKey: string | null) {
           input.title,
         );
 
-        // Step 4: Call the Soroban contract.
+        // Step 4: Call the Soroban contract via useTxToast.
         setProgress("Updating on-chain listing…");
-        const success = await updateListing(
-          artistPublicKey,
-          input.listingId,
-          metadataResult.cid,
-          input.price,
-          token.address,
+        const success = await run(
+          () =>
+            updateListing(
+              artistPublicKey,
+              input.listingId,
+              metadataResult.cid,
+              input.price,
+              token.address,
+            ),
+          { action: "Update listing" }
         );
 
+        if (!success) return false;
+
         setProgress("Listing updated successfully!");
-        return success;
+        return true;
       } catch (err: unknown) {
         setError(getReadableErrorMessage(err, "Failed to update listing"));
         return false;
@@ -378,7 +371,7 @@ export function useUpdateListing(artistPublicKey: string | null) {
         setIsUpdating(false);
       }
     },
-    [artistPublicKey],
+    [artistPublicKey, run],
   );
 
   return { update, isUpdating, progress, error };
