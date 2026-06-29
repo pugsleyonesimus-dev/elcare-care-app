@@ -181,3 +181,92 @@ describe('Cache Middleware', () => {
     expect(res.body.message).toBe('fresh');
   });
 });
+
+// ── Cache invalidation tests ──────────────────────────────────────────────────
+
+describe('Cache Invalidation — invalidateCache & invalidateCacheForResource', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('[ISSUE-065] should delete cache keys matching a pattern', async () => {
+    mockRedisClient.isReady = true;
+    mockRedisClient.keys = vi.fn().mockResolvedValue(['cache:listing:123', 'cache:listing:123:history']);
+    mockRedisClient.del = vi.fn().mockResolvedValue(2);
+
+    const { invalidateCache } = await import('../api/cache-middleware');
+    await invalidateCache('cache:*listing:123*');
+
+    expect(mockRedisClient.keys).toHaveBeenCalledWith('cache:*listing:123*');
+    expect(mockRedisClient.del).toHaveBeenCalledWith(['cache:listing:123', 'cache:listing:123:history']);
+  });
+
+  it('[ISSUE-065] should handle empty key list gracefully', async () => {
+    mockRedisClient.isReady = true;
+    mockRedisClient.keys = vi.fn().mockResolvedValue([]);
+
+    const { invalidateCache } = await import('../api/cache-middleware');
+    await invalidateCache('cache:*nonexistent*');
+
+    expect(mockRedisClient.keys).toHaveBeenCalled();
+    expect(mockRedisClient.del).not.toHaveBeenCalled();
+  });
+
+  it('[ISSUE-065] should silently fail if Redis is not ready', async () => {
+    mockRedisClient.isReady = false;
+    mockRedisClient.keys = vi.fn();
+
+    const { invalidateCache } = await import('../api/cache-middleware');
+    await invalidateCache('cache:*listing:123*');
+
+    expect(mockRedisClient.keys).not.toHaveBeenCalled();
+  });
+
+  it('[ISSUE-065] should invalidate cache for specific resource by type and ID', async () => {
+    mockRedisClient.isReady = true;
+    mockRedisClient.keys = vi.fn().mockResolvedValue(['cache:/listings/123', 'cache:/listings/123/history']);
+    mockRedisClient.del = vi.fn().mockResolvedValue(2);
+
+    const { invalidateCacheForResource } = await import('../api/cache-middleware');
+    await invalidateCacheForResource('listing', '123');
+
+    expect(mockRedisClient.keys).toHaveBeenCalledWith('cache:*listing:123*');
+    expect(mockRedisClient.del).toHaveBeenCalled();
+  });
+
+  it('[ISSUE-065] should handle Redis errors gracefully during invalidation', async () => {
+    mockRedisClient.isReady = true;
+    mockRedisClient.keys = vi.fn().mockRejectedValue(new Error('Redis error'));
+
+    const { invalidateCache } = await import('../api/cache-middleware');
+    // Should not throw
+    await expect(invalidateCache('cache:*')).resolves.toBeUndefined();
+  });
+
+  it('[ISSUE-065] should accept numeric resource IDs', async () => {
+    mockRedisClient.isReady = true;
+    mockRedisClient.keys = vi.fn().mockResolvedValue([]);
+    mockRedisClient.del = vi.fn();
+
+    const { invalidateCacheForResource } = await import('../api/cache-middleware');
+    await invalidateCacheForResource('auction', 456);
+
+    expect(mockRedisClient.keys).toHaveBeenCalledWith('cache:*auction:456*');
+  });
+
+  it('[ISSUE-065] should support pattern-based invalidation for multiple resources', async () => {
+    mockRedisClient.isReady = true;
+    mockRedisClient.keys = vi.fn().mockResolvedValue([
+      'cache:/listings/123',
+      'cache:/listings/456',
+      'cache:/collections/789'
+    ]);
+    mockRedisClient.del = vi.fn().mockResolvedValue(3);
+
+    const { invalidateCache } = await import('../api/cache-middleware');
+    await invalidateCache('cache:*/listings/*');
+
+    expect(mockRedisClient.keys).toHaveBeenCalledWith('cache:*/listings/*');
+    expect(mockRedisClient.del).toHaveBeenCalled();
+  });
+});

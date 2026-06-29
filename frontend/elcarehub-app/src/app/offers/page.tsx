@@ -9,7 +9,7 @@ import Link from "next/link";
 import { useWalletContext } from "@/context/WalletContext";
 import { useOffererOffers, useWithdrawOffer } from "@/hooks/useOffers";
 import { stroopsToXlm, Offer } from "@/lib/contract";
-import { ShoppingBag, Clock, CheckCircle, XCircle, ArrowUpRight, History, Activity, TrendingUp, Loader2 } from "lucide-react";
+import { ShoppingBag, Clock, CheckCircle, XCircle, ArrowUpRight, History, Activity, TrendingUp, Loader2, Inbox, CalendarClock } from "lucide-react";
 import { WalletGuard } from "@/components/WalletGuard";
 import { SUPPORTED_TOKENS } from "@/config/tokens";
 import { clsx } from "clsx";
@@ -83,8 +83,21 @@ export default function OffersPage() {
             </div>
           </div>
 
+          {/* Cross-Navigation Link */}
+          <div className="mb-8 flex justify-end">
+            <Link
+              href="/offers/incoming"
+              data-testid="nav-incoming"
+              className="inline-flex items-center gap-2 rounded-2xl bg-white/5 border border-white/10 px-6 py-3 text-sm font-bold text-white/60 hover:text-brand-400 hover:border-brand-500/30 hover:bg-white/[0.07] transition-all duration-300"
+            >
+              <Inbox size={16} />
+              View Offer Inbox
+              <ArrowUpRight size={14} className="opacity-50" />
+            </Link>
+          </div>
+
           {/* Stats Metrics Area */}
-          <div className="mb-12 grid gap-6 sm:grid-cols-3">
+          <div className="mb-12 grid gap-6 sm:grid-cols-3" data-testid="stats-grid">
             {[
               { label: "Total Placed", value: offers.length, icon: History, color: "brand" },
               { label: "Pending Response", value: pendingCnt, icon: Activity, color: "mint" },
@@ -188,7 +201,7 @@ export default function OffersPage() {
             ) : (
               <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
                 {filtered.map((o) => (
-                  <div key={o.offer_id} className="group relative flex flex-col rounded-[2.5rem] bg-white/[0.03] hover:bg-white/[0.07] hover:border-white/10 transition-all duration-500 border border-white/5 p-6 shadow-2xl overflow-hidden">
+                  <div key={o.offer_id} data-testid={`offer-card-${o.offer_id}`} className="group relative flex flex-col rounded-[2.5rem] bg-white/[0.03] hover:bg-white/[0.07] hover:border-white/10 transition-all duration-500 border border-white/5 p-6 shadow-2xl overflow-hidden">
                     {/* Background Pattern Hint */}
                     <div className="absolute -top-10 -right-10 tribal-pattern opacity-[0.03] scale-50 group-hover:rotate-12 transition-transform duration-700" />
 
@@ -233,8 +246,22 @@ export default function OffersPage() {
                         </div>
                       </div>
 
+                      {/* Listing Expiry */}
+                      <div className="flex items-center justify-between pt-4 border-t border-white/5" data-testid={`offer-expiry-${o.offer_id}`}>
+                        <div className="flex items-center gap-2">
+                          <CalendarClock size={13} className="text-white/20" />
+                          <span className="text-[10px] uppercase font-bold text-white/20 tracking-widest">Listing Expiry</span>
+                        </div>
+                        <span className="text-xs text-white/40">
+                          {o.listing?.expires_at
+                            ? new Date(o.listing.expires_at * 1000).toLocaleDateString()
+                            : "No expiry"}
+                        </span>
+                      </div>
+
                       {o.status === "Pending" && (
                         <button
+                          data-testid={`withdraw-btn-${o.offer_id}`}
                           onClick={async () => {
                             const ok = await withdraw(o.offer_id);
                             if (ok) refresh();

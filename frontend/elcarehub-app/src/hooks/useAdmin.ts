@@ -19,6 +19,7 @@ import {
     getTokenWhitelist
 } from "@/lib/contract";
 import { Horizon } from "@stellar/stellar-sdk";
+import { config } from "@/lib/config";
 
 export interface AdminStats {
     totalListings: number;

@@ -1,18 +1,72 @@
-import { Router, Request, Response } from 'express';
-import axios from 'axios';
+import { Router, Request, Response, NextFunction } from 'express';
 import prisma from '../db.js';
 import redis from '../redis.js';
 import { cacheMiddleware } from './cache-middleware.js';
 import { strictRateLimiter } from './rate-limit-middleware.js';
-import { etagMiddleware } from './etag-middleware.js';
+import { badRequest, notFound, internalError } from './errors.js';
+import {
+  validateQuery,
+  listingsQuerySchema,
+  auctionsQuerySchema,
+  offersQuerySchema,
+  walletActivityQuerySchema,
+  collectionsQuerySchema,
+  statsQuerySchema,
+} from './query-schemas.js';
+
+// ── SSE registry ───────────────────────────────────────────────────────────────
+
+const SSE_BUFFER_SIZE = 200;
+
+interface SSEEvent {
+  id: number;
+  data: string;
+}
+
+let sseEventCounter = 0;
+const sseBuffer: SSEEvent[] = [];
+const sseClients: Map<Response, number> = new Map();
+
+function nextSseId(): number {
+  return ++sseEventCounter;
+}
+
+// Exposed for testing only
+export function _getSseBuffer() { return sseBuffer; }
+export function _getSseEventCounter() { return sseEventCounter; }
+export function _resetSseState() {
+  sseEventCounter = 0;
+  sseBuffer.length = 0;
+  sseClients.clear();
+}
 
 // SSE clients registry
 const sseClients: Response[] = [];
+
 export function emitSSEEvent(event: any) {
-    const data = `data: ${JSON.stringify(event, (_k, v) => typeof v === 'bigint' ? v.toString() : v)}\n\n`;
-    for (const client of sseClients) {
-        try { client.write(data); } catch { /* ignore closed connections */ }
+  const id = nextSseId();
+  const dataStr = JSON.stringify(event, (_k, v) => typeof v === 'bigint' ? v.toString() : v);
+  const payload: SSEEvent = { id, data: dataStr };
+
+  sseBuffer.push(payload);
+  if (sseBuffer.length > SSE_BUFFER_SIZE) sseBuffer.shift();
+
+  const frame = `id: ${id}\ndata: ${dataStr}\n\n`;
+  for (const [client] of sseClients) {
+    try {
+      client.write(frame);
+      sseClients.set(client, id);
+    } catch {
+      sseClients.delete(client);
     }
+  }
+}
+
+export function closeSSEClients(): void {
+    for (const client of sseClients) {
+        try { client.end(); } catch { /* ignore */ }
+    }
+    sseClients.length = 0;
 }
 
 const router = Router();
@@ -22,416 +76,384 @@ router.use(etagMiddleware);
 const CACHE_TTL_SECONDS = parseInt(process.env.REDIS_CACHE_TTL_SECONDS || '30');
 
 async function getCached<T>(key: string, ttl: number, fetcher: () => Promise<T>): Promise<T> {
-    try {
-        const cached = await redis.get(key);
-        if (cached) return JSON.parse(cached) as T;
-    } catch {
-        // Redis unavailable — fall through to DB
-    }
-    const result = await fetcher();
-    try {
-        await redis.set(key, JSON.stringify(result), { expiration: { type: 'EX', value: ttl } });
-    } catch {
-        // ignore cache write failures
-    }
-    return result;
+  try {
+    const cached = await redis.get(key);
+    if (cached) return JSON.parse(cached) as T;
+  } catch {
+    // Redis unavailable — fall through to DB
+  }
+  const result = await fetcher();
+  try {
+    await redis.set(key, JSON.stringify(result), { expiration: { type: 'EX', value: ttl } });
+  } catch {
+    // ignore cache write failures
+  }
+  return result;
 }
 
-// Helper to serialize BigInts to strings for JSON
 const serialize = (obj: any) =>
-    JSON.parse(JSON.stringify(obj, (key, value) =>
-        typeof value === 'bigint' ? value.toString() : value
-    ));
+  JSON.parse(JSON.stringify(obj, (key, value) =>
+    typeof value === 'bigint' ? value.toString() : value
+  ));
 
-// Normalise IPFS gateway — always ensure it ends with /
-function normaliseGateway(gateway: string): string {
-    return gateway.endsWith('/') ? gateway : `${gateway}/`;
-}
+// ── GET /events (SSE) ─────────────────────────────────────────────────────────
 
-// GET /listings?artist=&status=&minPrice=&maxPrice=&search=&limit=&offset=
-router.get('/listings', async (req: Request, res: Response) => {
-    const { artist, owner, status, limit, offset, minPrice, maxPrice, search } = req.query;
-    try {
-        const where: any = {};
-        if (artist) where.artist = artist as string;
-        if (owner) where.owner = owner as string;
-        if (status) where.status = status as string;
+router.get('/events', (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
 
-        if (minPrice || maxPrice) {
-            where.price = {};
-            if (minPrice) where.price.gte = minPrice as string;
-            if (maxPrice) where.price.lte = maxPrice as string;
+  const lastEventId = req.headers['last-event-id'];
+  const resumeFrom = lastEventId ? parseInt(String(lastEventId), 10) : null;
+
+  sseClients.set(res, resumeFrom ?? sseEventCounter);
+
+  if (resumeFrom !== null && !isNaN(resumeFrom)) {
+    const missed = sseBuffer.filter(e => e.id > resumeFrom);
+    for (const ev of missed) {
+      try {
+        res.write(`id: ${ev.id}\ndata: ${ev.data}\n\n`);
+      } catch {
+        break;
+      }
+    }
+  }
+
+  req.on('close', () => sseClients.delete(res));
+});
+
+// ── GET /listings ─────────────────────────────────────────────────────────────
+
+router.get('/listings', validateQuery(listingsQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { artist, owner, status, limit, offset, minPrice, maxPrice, search } =
+    (req as any).validatedQuery;
+  try {
+    const where: any = {};
+    if (artist) where.artist = artist;
+    if (owner) where.owner = owner;
+    if (status) where.status = status;
+
+    if (minPrice !== undefined || maxPrice !== undefined) {
+      where.price = {};
+      if (minPrice !== undefined) where.price.gte = String(minPrice);
+      if (maxPrice !== undefined) where.price.lte = String(maxPrice);
+    }
+
+    if (search) {
+      where.OR = [
+        { artist: { contains: search, mode: 'insensitive' } },
+        { collection: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    const take = limit || undefined;
+    const skip = offset || undefined;
+
+    const results = await prisma.listing.findMany({
+      where,
+      orderBy: { updatedAtLedger: 'desc' },
+      take,
+      skip,
+    });
+
+    if (take !== undefined || skip !== undefined) {
+      const total = await prisma.listing.count({ where });
+      return res.json({ listings: serialize(results), total });
+    }
+
+    res.json(serialize(results));
+  } catch (err) {
+    next(internalError('Failed to fetch listings'));
+  }
+});
+
+// ── GET /listings/:id ─────────────────────────────────────────────────────────
+
+router.get('/listings/:id', async (req: Request, res: Response, next: NextFunction) => {
+  const { id } = req.params;
+  try {
+    const listing = await prisma.listing.findUnique({
+      where: { listingId: BigInt(id as string) },
+    });
+    if (!listing) return next(notFound('Listing not found'));
+    return res.json(serialize(listing));
+  } catch (err) {
+    next(internalError('Failed to fetch listing details'));
+  }
+});
+
+// ── GET /listings/:id/history ─────────────────────────────────────────────────
+
+router.get('/listings/:id/history', async (req: Request, res: Response, next: NextFunction) => {
+  const id = req.params.id as string;
+  if (!/^\d+$/.test(id)) {
+    return next(badRequest('Invalid ID format'));
+  }
+  try {
+    const results = await prisma.marketplaceEvent.findMany({
+      where: { listingId: BigInt(id) },
+      orderBy: { ledgerSequence: 'asc' },
+    });
+    res.json(serialize(results));
+  } catch (err) {
+    next(internalError('Failed to fetch listing history'));
+  }
+});
+
+// ── GET /auctions ─────────────────────────────────────────────────────────────
+
+router.get('/auctions', validateQuery(auctionsQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { creator, status } = (req as any).validatedQuery;
+  try {
+    const where: any = {};
+    if (creator) where.creator = creator;
+    if (status) where.status = status;
+
+    const results = await prisma.auction.findMany({
+      where,
+      orderBy: { updatedAtLedger: 'desc' },
+    });
+    res.json(serialize(results));
+  } catch (err) {
+    next(internalError('Failed to fetch auctions'));
+  }
+});
+
+// ── GET /auctions/:id ─────────────────────────────────────────────────────────
+
+router.get('/auctions/:id', async (req: Request, res: Response, next: NextFunction) => {
+  const id = req.params.id as string;
+  if (!/^\d+$/.test(id)) {
+    return next(badRequest('Invalid ID format'));
+  }
+  try {
+    const result = await prisma.auction.findUnique({
+      where: { auctionId: BigInt(id) },
+    });
+    if (!result) return next(notFound('Auction not found'));
+    res.json(serialize(result));
+  } catch (err) {
+    next(internalError('Failed to fetch auction'));
+  }
+});
+
+// ── GET /offers ───────────────────────────────────────────────────────────────
+
+router.get('/offers', validateQuery(offersQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { listing_id } = (req as any).validatedQuery;
+  try {
+    const where: any = {};
+    if (listing_id) {
+      where.listingId = BigInt(listing_id);
+    }
+
+    const results = await prisma.offer.findMany({
+      where,
+      orderBy: { updatedAtLedger: 'desc' },
+    });
+    res.json(serialize(results));
+  } catch (err) {
+    next(internalError('Failed to fetch offers'));
+  }
+});
+
+// ── GET /activity/recent ──────────────────────────────────────────────────────
+
+router.get('/activity/recent', cacheMiddleware(30), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const results = await getCached('activity:recent', CACHE_TTL_SECONDS, () =>
+      prisma.marketplaceEvent.findMany({
+        take: 20,
+        orderBy: { ledgerSequence: 'desc' },
+      })
+    );
+    res.json(serialize(results));
+  } catch (err) {
+    next(internalError('Failed to fetch recent activity'));
+  }
+});
+
+// ── GET /collections ──────────────────────────────────────────────────────────
+
+router.get('/collections', cacheMiddleware(60), validateQuery(collectionsQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { kind, creator } = (req as any).validatedQuery;
+  try {
+    const where: any = {};
+    if (kind)    where.kind    = kind;
+    if (creator) where.creator = creator;
+    const cacheKey = `collections:${kind ?? ''}:${creator ?? ''}`;
+    const results = await getCached(cacheKey, CACHE_TTL_SECONDS, () =>
+      prisma.collection.findMany({
+        where,
+        orderBy: { deployedAtLedger: 'desc' },
+      })
+    );
+    res.json(serialize(results));
+  } catch (err) {
+    next(internalError('Failed to fetch collections'));
+  }
+});
+
+// ── GET /creators/:address/collections ───────────────────────────────────────
+
+router.get('/creators/:address/collections', async (req: Request, res: Response, next: NextFunction) => {
+  const { address } = req.params;
+  try {
+    const results = await prisma.collection.findMany({
+      where: { creator: address as string },
+      orderBy: { deployedAtLedger: 'desc' },
+    });
+    res.json(serialize(results));
+  } catch (err) {
+    next(internalError('Failed to fetch creator collections'));
+  }
+});
+
+// ── GET /wallets/:address/activity ────────────────────────────────────────────
+
+router.get('/wallets/:address/activity', strictRateLimiter, validateQuery(walletActivityQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const address = req.params.address as string;
+  const { limit } = (req as any).validatedQuery;
+  const take = Math.min(limit ?? 50, 200);
+  try {
+    const jsonKeys = ['buyer', 'artist', 'offerer', 'bidder', 'winner', 'creator'];
+    const fromJson = jsonKeys.map((path) => ({
+      data: { path: [path], equals: address },
+    }));
+
+    const events = await prisma.marketplaceEvent.findMany({
+      where: {
+        OR: [{ actor: address }, ...fromJson],
+      },
+      orderBy: { ledgerSequence: 'desc' },
+      take,
+    });
+
+    res.json(serialize(events));
+  } catch (err) {
+    next(internalError('Failed to fetch wallet activity'));
+  }
+});
+
+// ── GET /wallets/:address/royalty-stats ───────────────────────────────────────
+
+router.get('/wallets/:address/royalty-stats', strictRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  const { address } = req.params;
+  try {
+    const sold = await prisma.listing.findMany({
+      where: {
+        originalCreator: address as string,
+        status: 'Sold',
+        NOT: { artist: address as string },
+      },
+      select: {
+        listingId: true,
+        price: true,
+        royaltyBps: true,
+        updatedAtLedger: true,
+      },
+    });
+
+    let totalEarned = 0;
+    for (const row of sold) {
+      const p = Number(row.price);
+      totalEarned += (p * row.royaltyBps) / 10000;
+    }
+
+    const lastSale = sold.reduce<(typeof sold)[0] | null>((latest, row) => {
+      if (!latest || row.updatedAtLedger > latest.updatedAtLedger) return row;
+      return latest;
+    }, null);
+
+    res.json({
+      totalEarned: totalEarned.toFixed(7),
+      payoutCount: sold.length,
+      lastPayout: lastSale ? lastSale.updatedAtLedger * 1000 : 0,
+    });
+  } catch (err) {
+    next(internalError('Failed to fetch royalty stats'));
+  }
+});
+
+// ── GET /stats ────────────────────────────────────────────────────────────────
+
+router.get('/stats', validateQuery(statsQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { from, to, range } = (req as any).validatedQuery;
+  try {
+    let dateFrom: Date | undefined;
+    let dateTo: Date | undefined;
+
+    if (range) {
+      const now = new Date();
+      dateTo = now;
+      if (range === 'day') {
+        dateFrom = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      } else if (range === 'week') {
+        dateFrom = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      } else {
+        dateFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      }
+    } else {
+      if (from) {
+        dateFrom = new Date(from as string);
+        if (isNaN(dateFrom.getTime())) {
+          return next(badRequest('Invalid from date format. Use ISO 8601.'));
         }
-
-        // Search against artist address or collection
-        if (search) {
-            const q = search as string;
-            where.OR = [
-                { artist: { contains: q, mode: 'insensitive' } },
-                { collection: { contains: q, mode: 'insensitive' } },
-            ];
+      }
+      if (to) {
+        dateTo = new Date(to as string);
+        if (isNaN(dateTo.getTime())) {
+          return next(badRequest('Invalid to date format. Use ISO 8601.'));
         }
-
-        const take = Math.max(0, Math.min(Number(limit || 0), 1000)) || undefined;
-        const rawOffset = Number(offset || 0);
-        const skip = Number.isFinite(rawOffset) && rawOffset > 0
-            ? Math.min(rawOffset, 10_000)
-            : undefined;
-
-        const results = await prisma.listing.findMany({
-            where,
-            orderBy: { updatedAtLedger: 'desc' },
-            take,
-            skip,
-        });
-
-        // If pagination requested, also return total count
-        if (take !== undefined || skip !== undefined) {
-            const total = await prisma.listing.count({ where });
-            return res.json({ listings: serialize(results), total });
-        }
-
-        res.json(serialize(results));
-    } catch (err) {
-        console.error('Error details:', err);
-        res.status(500).json({ error: 'Failed to fetch listings' });
+      }
     }
-});
 
-// GET /listings/:id — single listing with metadata (if available)
-router.get('/listings/:id', async (req: Request, res: Response) => {
-    const { id } = req.params;
-    try {
-        const listing = await prisma.listing.findUnique({
-            where: { listingId: BigInt(id as string) },
-        });
-        if (!listing) return res.status(404).json({ error: 'Listing not found' });
+    const eventTimeFilter: any = {};
+    if (dateFrom) eventTimeFilter.gte = dateFrom;
+    if (dateTo)   eventTimeFilter.lte = dateTo;
+    const hasTimeFilter = Object.keys(eventTimeFilter).length > 0;
 
-        const out: any = serialize(listing);
-        return res.json(out);
-    } catch (err) {
-        console.error('Error details:', err);
-        res.status(500).json({ error: 'Failed to fetch listing details' });
-    }
-});
+    const totalListings = await prisma.listing.count();
+    const activeListings = await prisma.listing.count({ where: { status: 'Active' } });
 
-// GET /listings/:id/history — full event timeline for a single listing
-router.get('/listings/:id/history', async (req: Request, res: Response) => {
-    const id = req.params.id as string;
-    if (!/^\d+$/.test(id)) {
-        return res.status(400).json({ error: 'Invalid ID format' });
-    }
-    try {
-        const results = await prisma.marketplaceEvent.findMany({
-            where: { listingId: BigInt(id) },
-            orderBy: { ledgerSequence: 'asc' },
-        });
-        res.json(serialize(results));
-    } catch (err) {
-        console.error('Error details:', err);
-        res.status(500).json({ error: 'Failed to fetch listing history' });
-    }
-});
+    const volumeResult = await prisma.listing.aggregate({
+      _sum: { price: true },
+      where: { status: 'Sold' },
+    });
+    const totalVolume = volumeResult._sum.price?.toString() ?? '0';
 
-// GET /auctions — all active or finished auctions
-router.get('/auctions', async (req: Request, res: Response) => {
-    const { creator, status } = req.query;
-    try {
-        const where: any = {};
-        if (creator) where.creator = creator as string;
-        if (status) where.status = status as string;
+    const userFilter: any = hasTimeFilter ? { ledgerTimestamp: eventTimeFilter } : {};
+    const distinctActors = await prisma.marketplaceEvent.findMany({
+      where: userFilter,
+      select: { actor: true },
+      distinct: ['actor'],
+    });
+    const activeUsers = distinctActors.length;
 
-        const results = await prisma.auction.findMany({
-            where,
-            orderBy: { updatedAtLedger: 'desc' },
-        });
-        res.json(serialize(results));
-    } catch (err) {
-        console.error('Error details:', err);
-        res.status(500).json({ error: 'Failed to fetch auctions' });
-    }
-});
+    const totalEvents = await prisma.marketplaceEvent.count({ where: userFilter });
 
-// GET /auctions/:id — a single auction by ID
-router.get('/auctions/:id', async (req: Request, res: Response) => {
-    const id = req.params.id as string;
-    if (!/^\d+$/.test(id)) {
-        return res.status(400).json({ error: 'Invalid ID format' });
-    }
-    try {
-        const result = await prisma.auction.findUnique({
-            where: { auctionId: BigInt(id) },
-        });
-        if (!result) {
-            return res.status(404).json({ error: 'Auction not found' });
-        }
-        res.json(serialize(result));
-    } catch (err) {
-        console.error('Error details:', err);
-        res.status(500).json({ error: 'Failed to fetch auction' });
-    }
-});
+    const salesFilter: any = { eventType: 'ARTWORK_SOLD' };
+    if (hasTimeFilter) salesFilter.ledgerTimestamp = eventTimeFilter;
+    const totalSales = await prisma.marketplaceEvent.count({ where: salesFilter });
 
-// GET /offers — all offers for a listing
-router.get('/offers', async (req: Request, res: Response) => {
-    const { listing_id } = req.query;
-    try {
-        const where: any = {};
-        if (listing_id) {
-            if (!/^\d+$/.test(listing_id as string)) {
-                return res.status(400).json({ error: 'Invalid listing_id format' });
-            }
-            where.listingId = BigInt(listing_id as string);
-        }
-
-        const results = await prisma.offer.findMany({
-            where,
-            orderBy: { updatedAtLedger: 'desc' },
-        });
-        res.json(serialize(results));
-    } catch (err) {
-        console.error('Error details:', err);
-        res.status(500).json({ error: 'Failed to fetch offers' });
-    }
-});
-
-// GET /activity/recent — latest sales and listings across the marketplace
-// Cache for 30 seconds to handle traffic spikes
-router.get('/activity/recent', cacheMiddleware(30), async (req: Request, res: Response) => {
-    try {
-        const results = await getCached('activity:recent', CACHE_TTL_SECONDS, () =>
-            prisma.marketplaceEvent.findMany({
-                take: 20,
-                orderBy: { ledgerSequence: 'desc' },
-            })
-        );
-        res.json(serialize(results));
-    } catch (err) {
-        console.error('Error details:', err);
-        res.status(500).json({ error: 'Failed to fetch recent activity' });
-    }
-});
-
-
-// GET /collections — all deployed collections
-// Cache for 60 seconds to handle traffic spikes
-router.get('/collections', cacheMiddleware(60), async (req: Request, res: Response) => {
-    const { kind, creator } = req.query;
-    try {
-        const where: any = {};
-        if (kind)    where.kind    = kind as string;
-        if (creator) where.creator = creator as string;
-        const cacheKey = `collections:${kind ?? ''}:${creator ?? ''}`;
-        const results = await getCached(cacheKey, CACHE_TTL_SECONDS, () =>
-            prisma.collection.findMany({
-                where,
-                orderBy: { deployedAtLedger: 'desc' },
-            })
-        );
-        res.json(serialize(results));
-    } catch (err) {
-        console.error('Error details:', err);
-        res.status(500).json({ error: 'Failed to fetch collections' });
-    }
-});
-
-// GET /creators/:address/collections — collections deployed by a creator
-router.get('/creators/:address/collections', async (req: Request, res: Response) => {
-    const { address } = req.params;
-    try {
-        const results = await prisma.collection.findMany({
-            where: { creator: address as string },
-            orderBy: { deployedAtLedger: 'desc' },
-        });
-        res.json(serialize(results));
-    } catch (err) {
-        console.error('Error details:', err);
-        res.status(500).json({ error: 'Failed to fetch creator collections' });
-    }
-});
-
-// GET /wallets/:address/activity — events relevant to a Stellar account
-router.get('/wallets/:address/activity', strictRateLimiter, async (req: Request, res: Response) => {
-    const address = req.params.address as string;
-    const take = Math.min(parseInt(String(req.query.limit || '50'), 10) || 50, 200);
-    try {
-        const jsonKeys = ['buyer', 'artist', 'offerer', 'bidder', 'winner', 'creator'];
-        const fromJson = jsonKeys.map((path) => ({
-            data: { path: [path], equals: address },
-        }));
-
-        const events = await prisma.marketplaceEvent.findMany({
-            where: {
-                OR: [{ actor: address }, ...fromJson],
-            },
-            orderBy: { ledgerSequence: 'desc' },
-            take,
-        });
-
-        res.json(serialize(events));
-    } catch (err) {
-        console.error('Error details:', err);
-        res.status(500).json({ error: 'Failed to fetch wallet activity' });
-    }
-});
-
-// GET /wallets/:address/royalty-stats — royalty income from resales (seller != original creator)
-router.get('/wallets/:address/royalty-stats', strictRateLimiter, async (req: Request, res: Response) => {
-    const { address } = req.params;
-    try {
-        const sold = await prisma.listing.findMany({
-            where: {
-                originalCreator: address as string,
-                status: 'Sold',
-                NOT: { artist: address as string },
-            },
-            select: {
-                listingId: true,
-                price: true,
-                royaltyBps: true,
-                updatedAtLedger: true,
-            },
-        });
-
-        let totalEarned = 0;
-        for (const row of sold) {
-            const p = Number(row.price);
-            totalEarned += (p * row.royaltyBps) / 10000;
-        }
-
-        const lastSale = sold.reduce<(typeof sold)[0] | null>((latest, row) => {
-            if (!latest || row.updatedAtLedger > latest.updatedAtLedger) {
-                return row;
-            }
-            return latest;
-        }, null);
-
-        res.json({
-            totalEarned: totalEarned.toFixed(7),
-            payoutCount: sold.length,
-            lastPayout: lastSale ? lastSale.updatedAtLedger * 1000 : 0,
-        });
-    } catch (err) {
-        console.error('Error details:', err);
-        res.status(500).json({ error: 'Failed to fetch royalty stats' });
-    }
-});
-
-// GET /stats — marketplace-wide aggregates with optional time-range filtering
-// Query params:
-//   from  — ISO 8601 date string (inclusive lower bound), e.g. 2024-01-01
-//   to    — ISO 8601 date string (inclusive upper bound), e.g. 2024-12-31
-//   range — shorthand: "day" | "week" | "month" (overrides from/to)
-router.get('/stats', async (req: Request, res: Response) => {
-    try {
-        const { from, to, range } = req.query;
-
-        // Resolve time window
-        let dateFrom: Date | undefined;
-        let dateTo: Date | undefined;
-
-        if (range) {
-            const now = new Date();
-            dateTo = now;
-            if (range === 'day') {
-                dateFrom = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-            } else if (range === 'week') {
-                dateFrom = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-            } else if (range === 'month') {
-                dateFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-            } else {
-                return res.status(400).json({ error: 'Invalid range value. Use day, week, or month.' });
-            }
-        } else {
-            if (from) {
-                dateFrom = new Date(from as string);
-                if (isNaN(dateFrom.getTime())) {
-                    return res.status(400).json({ error: 'Invalid from date format. Use ISO 8601.' });
-                }
-            }
-            if (to) {
-                dateTo = new Date(to as string);
-                if (isNaN(dateTo.getTime())) {
-                    return res.status(400).json({ error: 'Invalid to date format. Use ISO 8601.' });
-                }
-            }
-        }
-
-        // Build ledgerTimestamp filter for time-ranged queries
-        const eventTimeFilter: any = {};
-        if (dateFrom) eventTimeFilter.gte = dateFrom;
-        if (dateTo)   eventTimeFilter.lte = dateTo;
-        const hasTimeFilter = Object.keys(eventTimeFilter).length > 0;
-
-        // Total listings count
-        const totalListings = await prisma.listing.count();
-
-        // Active listings count
-        const activeListings = await prisma.listing.count({
-            where: { status: 'Active' },
-        });
-
-        // Total volume — sum of price for all Sold listings
-        const volumeResult = await prisma.listing.aggregate({
-            _sum: { price: true },
-            where: { status: 'Sold' },
-        });
-        const totalVolume = volumeResult._sum.price?.toString() ?? '0';
-
-        // Unique active users — distinct actors across marketplace events
-        const userFilter: any = hasTimeFilter
-            ? { ledgerTimestamp: eventTimeFilter }
-            : {};
-        const distinctActors = await prisma.marketplaceEvent.findMany({
-            where: userFilter,
-            select: { actor: true },
-            distinct: ['actor'],
-        });
-        const activeUsers = distinctActors.length;
-
-        // Event counts within the time window (or all-time if no filter)
-        const totalEvents = await prisma.marketplaceEvent.count({
-            where: userFilter,
-        });
-
-        // Sales count within time window
-        const salesFilter: any = { eventType: 'ARTWORK_SOLD' };
-        if (hasTimeFilter) salesFilter.ledgerTimestamp = eventTimeFilter;
-        const totalSales = await prisma.marketplaceEvent.count({
-            where: salesFilter,
-        });
-
-        // Volume within time window — sum price of sold listings whose updatedAt
-        // falls in the window (using ledgerTimestamp from events as proxy)
-        const windowVolumeResult = hasTimeFilter
-            ? await prisma.listing.aggregate({
-                _sum: { price: true },
-                where: {
-                    status: 'Sold',
-                    // ledgerTimestamp is on MarketplaceEvent, not Listing — use
-                    // an EXISTS sub-query approximation via a join on event time
-                },
-            })
-            : null;
-
-        res.json({
-            totalListings,
-            activeListings,
-            totalVolume,
-            activeUsers,
-            totalEvents,
-            totalSales,
-            ...(hasTimeFilter && {
-                timeRange: {
-                    from: dateFrom?.toISOString() ?? null,
-                    to: dateTo?.toISOString() ?? null,
-                },
-            }),
-        });
-    } catch (err) {
-        console.error('Error details:', err);
-        res.status(500).json({ error: 'Failed to fetch stats' });
-    }
+    res.json({
+      totalListings,
+      activeListings,
+      totalVolume,
+      activeUsers,
+      totalEvents,
+      totalSales,
+      ...(hasTimeFilter && {
+        timeRange: {
+          from: dateFrom?.toISOString() ?? null,
+          to: dateTo?.toISOString() ?? null,
+        },
+      }),
+    });
+  } catch (err) {
+    next(internalError('Failed to fetch stats'));
+  }
 });
 
 export default router;

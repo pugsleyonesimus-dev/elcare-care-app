@@ -295,6 +295,8 @@ export interface UpdateListingInput {
   price: number;
   originalTokenAddress: string;
   tokenAddress: string;
+  collectionAddress?: string;
+  nftTokenId?: number;
   imageFile?: File; // Optional: only if updating the image
   currentMetadata: ArtworkMetadata;
 }

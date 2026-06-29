@@ -55,6 +55,7 @@ export interface Listing {
   status: ListingStatus;
   owner: string | null;
   created_at: number;
+  expires_at?: number;
 }
 
 export type AuctionStatus = "Active" | "Finalized" | "Cancelled";
@@ -202,6 +203,10 @@ function parseRecipient(obj: any): Recipient {
 function parseListingFromScVal(raw: unknown): Listing {
   const obj = scValToNative(raw as xdr.ScVal) as Record<string, unknown>;
 
+  const expiresAtRaw = obj["expires_at"];
+  const expires_at =
+    expiresAtRaw != null ? Number(expiresAtRaw) : undefined;
+
   return {
     listing_id: Number(obj["listing_id"]),
     artist: (obj["artist"] as Address).toString(),
@@ -214,6 +219,7 @@ function parseListingFromScVal(raw: unknown): Listing {
     status: String(obj["status"]) as ListingStatus,
     owner: obj["owner"] ? (obj["owner"] as any).toString() : null,
     created_at: Number(obj["created_at"]),
+    ...(expires_at !== undefined && { expires_at }),
   };
 }
 

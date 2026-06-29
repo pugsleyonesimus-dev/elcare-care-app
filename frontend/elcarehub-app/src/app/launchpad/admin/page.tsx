@@ -8,6 +8,8 @@ import { useState } from "react";
 import { useWallet } from "@/hooks/useWallet";
 import { useLaunchpadAdminCheck, useLaunchpadAdminStats, useLaunchpadAdminActions } from "@/hooks/useLaunchpadAdmin";
 import { useLaunchpadCollections } from "@/hooks/useLaunchpad";
+import { useAdminSession } from "@/hooks/useAdminSession";
+import { AdminConfirmationModal } from "@/components/AdminConfirmationModal";
 import {
   Shield,
   Settings,
@@ -23,7 +25,9 @@ import {
   Palette,
   BarChart3,
   Crown,
-  Zap
+  Zap,
+  KeyRound,
+  History
 } from "lucide-react";
 
 export default function LaunchpadAdminPage() {
@@ -32,6 +36,7 @@ export default function LaunchpadAdminPage() {
   const { stats, isLoading: isLoadingStats, refresh: refreshStats } = useLaunchpadAdminStats();
   const { transferAdmin, updateFee, isProcessing, error: actionError } = useLaunchpadAdminActions(publicKey);
   const { collections } = useLaunchpadCollections();
+  const { isAuthenticated, authenticate, logout, sessionExpiresIn } = useAdminSession();
 
   // Local state for admin actions
   const [newAdminAddress, setNewAdminAddress] = useState("");
@@ -42,15 +47,48 @@ export default function LaunchpadAdminPage() {
   const [isEditingAdmin, setIsEditingAdmin] = useState(false);
   const [isEditingFee, setIsEditingFee] = useState(false);
 
+  // Confirmation Modal state
+  const [confirmConfig, setConfirmConfig] = useState<{
+    isOpen: boolean;
+    title: string;
+    actionDescription: string;
+    consequences: string[];
+    onConfirm: () => void;
+    variant: "danger" | "warning" | "info";
+  }>({
+    isOpen: false,
+    title: "",
+    actionDescription: "",
+    consequences: [],
+    onConfirm: () => { },
+    variant: "danger"
+  });
+
   const handleTransferAdmin = async () => {
     if (!newAdminAddress.trim()) return;
-    const success = await transferAdmin(newAdminAddress.trim());
-    if (success) {
-      setIsEditingAdmin(false);
-      setNewAdminAddress("");
-      // Refresh admin check
-      window.location.reload();
-    }
+
+    setConfirmConfig({
+      isOpen: true,
+      title: "Transfer Admin Rights",
+      actionDescription: `Transferring administrative control to ${newAdminAddress}.`,
+      consequences: [
+        "You will lose all administrative permissions immediately.",
+        "The new admin will have full control over launchpad settings.",
+        "This action is irreversible unless the new admin transfers it back.",
+        "Requires a blockchain transaction and signature."
+      ],
+      variant: "danger",
+      onConfirm: async () => {
+        const success = await transferAdmin(newAdminAddress.trim());
+        if (success) {
+          setIsEditingAdmin(false);
+          setNewAdminAddress("");
+          setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+          // Refresh admin check
+          window.location.reload();
+        }
+      }
+    });
   };
 
   const handleUpdateFee = async () => {
@@ -58,13 +96,28 @@ export default function LaunchpadAdminPage() {
     const feeBps = parseInt(newFeeBps.trim());
     if (isNaN(feeBps) || feeBps < 0 || feeBps > 10000) return; // Max 100%
 
-    const success = await updateFee(newFeeReceiver.trim(), feeBps);
-    if (success) {
-      setIsEditingFee(false);
-      setNewFeeReceiver("");
-      setNewFeeBps("");
-      refreshStats();
-    }
+    setConfirmConfig({
+      isOpen: true,
+      title: "Update Platform Fee",
+      actionDescription: `Updating platform fee to ${feeBps / 100}% and setting receiver to ${newFeeReceiver}.`,
+      consequences: [
+        "All future collection deployments will use this new fee structure.",
+        "Existing collections are not affected.",
+        "Fees will be sent to the specified receiver address.",
+        "Ensure the receiver address is correct to avoid loss of funds."
+      ],
+      variant: "warning",
+      onConfirm: async () => {
+        const success = await updateFee(newFeeReceiver.trim(), feeBps);
+        if (success) {
+          setIsEditingFee(false);
+          setNewFeeReceiver("");
+          setNewFeeBps("");
+          setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+          refreshStats();
+        }
+      }
+    });
   };
 
   if (isCheckingAdmin) {
@@ -94,22 +147,69 @@ export default function LaunchpadAdminPage() {
     );
   }
 
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center px-4 text-center">
+        <div className="mb-6 rounded-full bg-brand-100 p-6">
+          <Crown className="h-12 w-12 text-brand-600" />
+        </div>
+        <h1 className="font-display text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl">
+          Launchpad Admin Session
+        </h1>
+        <p className="mt-4 max-w-lg text-lg text-gray-600 mb-8 font-inter">
+          Secure access is required for sensitive launchpad operations.
+          Please authenticate to start your 15-minute administrative session.
+        </p>
+        <button
+          onClick={authenticate}
+          className="flex items-center gap-2 rounded-2xl bg-brand-600 px-8 py-4 text-lg font-bold text-white shadow-lg shadow-brand-200 transition-all hover:bg-brand-700 active:scale-95"
+        >
+          <KeyRound className="h-6 w-6" />
+          Authenticate Session
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <div className="bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-brand-100">
-              <Crown size={24} className="text-brand-600" />
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-brand-100">
+                <Crown size={24} className="text-brand-600" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-display font-bold text-gray-900">
+                  Launchpad Admin Dashboard
+                </h1>
+                <div className="flex items-center gap-2 mt-1">
+                  <p className="text-sm text-gray-500 font-inter">
+                    Manage launchpad settings and monitoring
+                  </p>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-bold text-green-700">
+                    <History className="h-3 w-3" />
+                    {Math.floor(sessionExpiresIn / 60000)}m
+                  </span>
+                </div>
+              </div>
             </div>
-            <div>
-              <h1 className="text-2xl font-display font-bold text-gray-900">
-                Launchpad Admin Dashboard
-              </h1>
-              <p className="text-gray-500 font-inter">
-                Manage launchpad settings, fees, and monitor collections
-              </p>
+            <div className="flex gap-2">
+              <button
+                onClick={logout}
+                className="px-4 py-2 text-sm font-semibold text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors"
+              >
+                Logout
+              </button>
+              <button
+                onClick={() => { refreshStats(); }}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+              >
+                <Loader2 size={16} className={isLoadingStats ? 'animate-spin' : ''} />
+                Refresh
+              </button>
             </div>
           </div>
         </div>
@@ -378,6 +478,17 @@ export default function LaunchpadAdminPage() {
           </div>
         </div>
       </div>
+
+      <AdminConfirmationModal
+        isOpen={confirmConfig.isOpen}
+        onClose={() => setConfirmConfig(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={confirmConfig.onConfirm}
+        title={confirmConfig.title}
+        actionDescription={confirmConfig.actionDescription}
+        consequences={confirmConfig.consequences}
+        variant={confirmConfig.variant}
+        isProcessing={isProcessing}
+      />
     </div>
   );
 }

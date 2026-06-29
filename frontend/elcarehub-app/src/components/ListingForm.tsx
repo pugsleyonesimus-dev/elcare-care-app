@@ -545,8 +545,8 @@ export function ListingForm({ listing, onSuccess, onCancel }: ListingFormProps) 
                 const addressTouched = shouldShowError(`recipient_${idx}_address`);
                 const pctTouched = shouldShowError(`recipient_${idx}_percentage`);
                 return (
-                  <div key={idx} className="flex gap-3 items-start">
-                    <div className="flex-1 space-y-1">
+                  <div key={idx} className="flex flex-col sm:flex-row gap-3 items-start">
+                    <div className="w-full sm:flex-1 space-y-1">
                       <input
                         value={recipient.address}
                         onChange={(e) => updateRecipient(idx, "address", e.target.value)}
@@ -566,7 +566,7 @@ export function ListingForm({ listing, onSuccess, onCancel }: ListingFormProps) 
                         </p>
                       )}
                     </div>
-                    <div className="w-28 space-y-1">
+                    <div className="w-full sm:w-28 space-y-1">
                       <div className="relative">
                         <input
                           type="number"

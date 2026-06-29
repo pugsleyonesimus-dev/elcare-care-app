@@ -1,4 +1,15 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const mockDecodeErrorsCounter = vi.hoisted(() => ({ inc: vi.fn() }));
+const mockRpcRetryExhaustedCounter = vi.hoisted(() => ({ inc: vi.fn() }));
+
+vi.mock('../metrics.js', () => ({
+  decodeErrorsCounter: mockDecodeErrorsCounter,
+  rpcRetryExhaustedCounter: mockRpcRetryExhaustedCounter,
+  latestLedgerProcessedGauge: { set: vi.fn() },
+  networkLatestLedgerGauge: { set: vi.fn() },
+  syncLatencyGauge: { set: vi.fn() },
+}));
 
 vi.mock('../parser.js', () => ({
   parseMarketplaceEvent: vi.fn((topics: string[], _valueXdr: string, ledger: number) => ({
@@ -8,6 +19,10 @@ vi.mock('../parser.js', () => ({
     ledgerSequence: ledger,
     data: { ledger },
   })),
+}));
+
+vi.mock('../retry.js', () => ({
+  withRetry: vi.fn((fn: () => Promise<unknown>) => fn()),
 }));
 
 import { collectMarketplaceEvents, MAX_LEDGER_WINDOW, EVENT_PAGE_LIMIT } from '../event-sync';
@@ -146,5 +161,79 @@ describe('collectMarketplaceEvents', () => {
     const events = await collectMarketplaceEvents({ getEvents } as any, ['C1'], 1, 10);
     expect(events).toHaveLength(1);
     expect(events[0].eventType).toBe('OK');
+  });
+});
+
+// ── Issue #54: malformed event isolation ─────────────────────────────────────
+
+describe('collectMarketplaceEvents — malformed event isolation', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('skips a malformed event and continues processing the remaining valid events', async () => {
+    const { parseMarketplaceEvent } = await import('../parser.js');
+    const mockParse = parseMarketplaceEvent as ReturnType<typeof vi.fn>;
+
+    mockParse
+      .mockReturnValueOnce({ eventType: 'VALID_A', ledgerSequence: 1, actor: 'G', listingId: 1n, data: {} })
+      .mockImplementationOnce(() => { throw new Error('malformed XDR'); })
+      .mockReturnValueOnce({ eventType: 'VALID_B', ledgerSequence: 3, actor: 'G', listingId: 3n, data: {} });
+
+    const getEvents = vi.fn().mockResolvedValue({
+      events: [
+        { topic: ['t1'], value: 'ok-xdr', ledger: 1 },
+        { topic: ['t2'], value: 'bad-xdr', ledger: 2 },
+        { topic: ['t3'], value: 'ok-xdr', ledger: 3 },
+      ],
+      paginationToken: null,
+    });
+
+    const events = await collectMarketplaceEvents({ getEvents } as any, ['C1'], 1, 10);
+
+    expect(events).toHaveLength(2);
+    expect(events.map((e) => e.eventType)).toEqual(['VALID_A', 'VALID_B']);
+  });
+
+  it('increments decodeErrorsCounter for each malformed event', async () => {
+    const { parseMarketplaceEvent } = await import('../parser.js');
+    const mockParse = parseMarketplaceEvent as ReturnType<typeof vi.fn>;
+
+    mockParse
+      .mockImplementationOnce(() => { throw new Error('bad 1'); })
+      .mockImplementationOnce(() => { throw new Error('bad 2'); });
+
+    const getEvents = vi.fn().mockResolvedValue({
+      events: [
+        { topic: ['t1'], value: 'v1', ledger: 10 },
+        { topic: ['t2'], value: 'v2', ledger: 11 },
+      ],
+      paginationToken: null,
+    });
+
+    await collectMarketplaceEvents({ getEvents } as any, ['C1'], 1, 20);
+
+    expect(mockDecodeErrorsCounter.inc).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not abort the cycle — returns all successfully decoded events', async () => {
+    const { parseMarketplaceEvent } = await import('../parser.js');
+    const mockParse = parseMarketplaceEvent as ReturnType<typeof vi.fn>;
+
+    mockParse
+      .mockImplementationOnce(() => { throw new Error('decode failure'); })
+      .mockReturnValueOnce({ eventType: 'GOOD', ledgerSequence: 5, actor: 'G', listingId: null, data: {} });
+
+    const getEvents = vi.fn().mockResolvedValue({
+      events: [
+        { topic: ['bad'], value: 'corrupt', ledger: 4 },
+        { topic: ['good'], value: 'valid', ledger: 5 },
+      ],
+      paginationToken: null,
+    });
+
+    const events = await collectMarketplaceEvents({ getEvents } as any, ['C1'], 1, 10);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].eventType).toBe('GOOD');
+    expect(mockDecodeErrorsCounter.inc).toHaveBeenCalledTimes(1);
   });
 });

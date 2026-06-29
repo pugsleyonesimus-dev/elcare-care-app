@@ -50,3 +50,32 @@ export const cacheMiddleware = (ttl: number) => {
         }
     };
 };
+
+/**
+ * Invalidate cache keys matching a pattern
+ * @param pattern Cache key pattern (e.g., "cache:*listing:123*")
+ */
+export async function invalidateCache(pattern: string): Promise<void> {
+    const client = redisClient as any;
+    if (!isRedisReady(client)) {
+        return;
+    }
+
+    try {
+        const keys = await client.keys(pattern);
+        if (keys.length > 0) {
+            await client.del(keys);
+        }
+    } catch (err: unknown) {
+        console.error(`Failed to invalidate cache pattern ${pattern}:`, err);
+    }
+}
+
+/**
+ * Invalidate cache for a resource by ID
+ * @param resourceType Type of resource (e.g., "listing", "auction")
+ * @param resourceId ID of the resource
+ */
+export async function invalidateCacheForResource(resourceType: string, resourceId: string | number): Promise<void> {
+    await invalidateCache(`cache:*${resourceType}:${resourceId}*`);
+}

@@ -60,7 +60,14 @@ jest.mock('@/lib/ipfs', () => ({
     image: 'QmImageCid',
     year: 2024,
   }),
-  cidToGatewayUrl: (cid: string) => `https://ipfs.io/ipfs/${cid}`,
+  getGatewayUrls: jest.fn().mockImplementation((cid: string) => {
+    const clean = cid.replace('ipfs://', '').trim();
+    return [
+      `https://mock-pinata.example.com/ipfs/${clean}`,
+      `https://ipfs.io/ipfs/${clean}`,
+      `https://cloudflare-ipfs.com/ipfs/${clean}`,
+    ];
+  }),
 }));
 
 // WalletGuard — render children directly
@@ -284,6 +291,51 @@ describe('ListingCard', () => {
     
     render(<ListingCard listing={makeListing()} />);
     await waitFor(() => {
+      expect(screen.getByTestId('artwork-missing')).toBeInTheDocument();
+    });
+  });
+
+  // ── IPFS gateway fallback tests ──────────────────────────────────────────
+
+  it('advances to the next gateway URL when the current image fails to load', async () => {
+    render(<ListingCard listing={makeListing()} />);
+
+    await waitFor(() => {
+      const img = screen.getByRole('img') as HTMLImageElement;
+      expect(img.src).toContain('mock-pinata.example.com');
+    });
+
+    screen.getByRole('img').dispatchEvent(new Event('error', { bubbles: true }));
+
+    await waitFor(() => {
+      const img = screen.getByRole('img') as HTMLImageElement;
+      expect(img.src).toContain('ipfs.io');
+    });
+  });
+
+  it('shows the placeholder when all gateway URLs have been exhausted', async () => {
+    render(<ListingCard listing={makeListing()} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('img')).toBeInTheDocument();
+    });
+
+    // Fail primary → fallback to ipfs.io
+    screen.getByRole('img').dispatchEvent(new Event('error', { bubbles: true }));
+    await waitFor(() => {
+      expect(screen.getByRole('img').getAttribute('src')).toContain('ipfs.io');
+    });
+
+    // Fail ipfs.io → fallback to cloudflare-ipfs.com
+    screen.getByRole('img').dispatchEvent(new Event('error', { bubbles: true }));
+    await waitFor(() => {
+      expect(screen.getByRole('img').getAttribute('src')).toContain('cloudflare-ipfs.com');
+    });
+
+    // All gateways exhausted → placeholder
+    screen.getByRole('img').dispatchEvent(new Event('error', { bubbles: true }));
+    await waitFor(() => {
+      expect(screen.queryByRole('img')).not.toBeInTheDocument();
       expect(screen.getByTestId('artwork-missing')).toBeInTheDocument();
     });
   });

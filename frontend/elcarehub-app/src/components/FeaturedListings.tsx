@@ -11,6 +11,7 @@ import { useMarketplace } from "@/hooks/useMarketplace";
 import { Listing, stroopsToXlm } from "@/lib/contract";
 import { fetchMetadata, cidToGatewayUrl, ArtworkMetadata } from "@/lib/ipfs";
 import { ArrowRight, ChevronLeft, ChevronRight, Tag, Eye } from "lucide-react";
+import { FeaturedListingSkeleton } from "./Skeletons";
 
 interface EnrichedItem {
   listing: Listing;
@@ -139,7 +140,28 @@ export function FeaturedListings() {
           </div>
         </div>
 
-        {showEmptyState ? (
+        {isLoading ? (
+          <>
+            <div className="hidden overflow-hidden md:block">
+              <div className="flex gap-6">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className={`min-w-full max-w-full flex-shrink-0 ${desktopCardWidthClass}`}
+                  >
+                    <FeaturedListingSkeleton />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 md:hidden">
+              {Array.from({ length: 2 }).map((_, i) => (
+                <FeaturedListingSkeleton key={i} />
+              ))}
+            </div>
+          </>
+        ) : showEmptyState ? (
           <div className="rounded-3xl border border-brand-100 bg-white px-6 py-12 text-center shadow-sm">
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-brand-50 text-brand-500">
               <Tag size={24} />
@@ -148,8 +170,7 @@ export function FeaturedListings() {
               No live featured listings yet
             </h3>
             <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-gray-500 sm:text-base">
-              The homepage will highlight live inventory as soon as artists publish active
-              listings. Nothing is being padded with sample artwork.
+              The homepage will highlight live inventory as soon as artists publish active listings. Nothing is being padded with sample artwork.
             </p>
           </div>
         ) : (

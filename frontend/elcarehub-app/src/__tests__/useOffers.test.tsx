@@ -37,6 +37,11 @@ jest.mock('@/hooks/useTransientErrorToast', () => ({
   useTransientErrorToast: jest.fn(),
 }));
 
+const mockPushToast = jest.fn();
+jest.mock('@/components/ToastProvider', () => ({
+  useToast: () => ({ pushToast: mockPushToast }),
+}));
+
 import {
   useOffererOffers,
   useListingOffers,
@@ -355,5 +360,124 @@ describe('useMakeOffer', () => {
     await user.click(screen.getByRole('button'));
     await waitFor(() => expect(screen.getByTestId('result').textContent).toBe('true'));
     expect(mockMakeOffer).toHaveBeenCalledWith('GBIDDER', 2, 3, 'CTOKEN');
+  });
+});
+
+// ── useWithdrawOffer — extended tests ─────────────────────────────────────────
+
+describe('useWithdrawOffer (extended)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('sets error and returns false on failure', async () => {
+    mockWithdrawOffer.mockRejectedValueOnce(new Error('withdraw failed'));
+
+    function Comp() {
+      const { withdraw, error } = useWithdrawOffer('GPUBLICKEY');
+      const [result, setResult] = React.useState<boolean | undefined>(undefined);
+      return (
+        <div>
+          <button onClick={async () => setResult(await withdraw(5))}>w</button>
+          <span data-testid="result">{String(result)}</span>
+          <span data-testid="error">{error ?? 'none'}</span>
+        </div>
+      );
+    }
+    const user = userEvent.setup();
+    render(<Comp />);
+    await user.click(screen.getByRole('button'));
+    await waitFor(() => expect(screen.getByTestId('result').textContent).toBe('false'));
+    expect(screen.getByTestId('error').textContent).not.toBe('none');
+  });
+
+  it('shows lifecycle toasts on successful withdraw', async () => {
+    mockWithdrawOffer.mockResolvedValueOnce(undefined);
+
+    function Comp() {
+      const { withdraw } = useWithdrawOffer('GPUBLICKEY');
+      return <button onClick={() => withdraw(1)}>w</button>;
+    }
+    const user = userEvent.setup();
+    render(<Comp />);
+    await user.click(screen.getByRole('button'));
+    await waitFor(() => {
+      expect(mockPushToast).toHaveBeenCalledWith('Withdrawing offer\u2026', 'info');
+      expect(mockPushToast).toHaveBeenCalledWith('Offer withdrawn successfully', 'success');
+    });
+  });
+});
+
+// ── useOffererOffers — refresh test ───────────────────────────────────────────
+
+describe('useOffererOffers (extended)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('can refresh manually to re-fetch offers', async () => {
+    // First load
+    mockGetOffererOffers.mockResolvedValueOnce([10]);
+    mockGetOffer.mockResolvedValueOnce(makeOffer(10));
+    mockGetListing.mockResolvedValueOnce(makeListing(1));
+
+    function Comp() {
+      const { offers, refresh } = useOffererOffers('GOFFERER');
+      return (
+        <div>
+          <span data-testid="count">{offers.length}</span>
+          <button onClick={refresh}>refresh</button>
+        </div>
+      );
+    }
+    render(<Comp />);
+    await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('1'));
+
+    // Second call setup
+    mockGetOffererOffers.mockResolvedValueOnce([10, 11]);
+    mockGetOffer
+      .mockResolvedValueOnce(makeOffer(10))
+      .mockResolvedValueOnce(makeOffer(11));
+    mockGetListing.mockResolvedValue(makeListing(1));
+
+    const user = userEvent.setup();
+    await user.click(screen.getByText('refresh'));
+    await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('2'));
+  });
+});
+
+// ── useIncomingOffers — inactive listings skipped ─────────────────────────────
+
+describe('useIncomingOffers (extended)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('skips non-Active listings and only fetches offers for active ones', async () => {
+    const activeListing = makeListing(1);
+    const soldListing = { ...makeListing(2), status: 'Sold' };
+
+    mockGetArtistListings.mockResolvedValueOnce([1, 2]);
+    mockGetListing
+      .mockResolvedValueOnce(activeListing)
+      .mockResolvedValueOnce(soldListing);
+    // Only the active listing should trigger getListingOffers
+    mockGetListingOffers.mockResolvedValueOnce([7]);
+    mockGetOffer.mockResolvedValueOnce(makeOffer(7));
+
+    function Comp() {
+      const { offersByListing } = useIncomingOffers('GOWNER');
+      return (
+        <div>
+          <span data-testid="count">{offersByListing.length}</span>
+          {offersByListing.map((g: any) => (
+            <span key={g.listing.listing_id} data-testid={`group-${g.listing.listing_id}`}>
+              {g.offers.length}
+            </span>
+          ))}
+        </div>
+      );
+    }
+    render(<Comp />);
+    await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('1'));
+    // Only listing 1 should have a group
+    expect(screen.getByTestId('group-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('group-2')).not.toBeInTheDocument();
+    // getListingOffers should only have been called once (for the active listing)
+    expect(mockGetListingOffers).toHaveBeenCalledTimes(1);
   });
 });

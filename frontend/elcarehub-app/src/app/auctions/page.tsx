@@ -10,6 +10,7 @@ import Image from "next/image";
 import { useAuctions } from "@/hooks/useAuctions";
 import { Auction, stroopsToXlm } from "@/lib/contract";
 import { fetchMetadata, cidToGatewayUrl, ArtworkMetadata } from "@/lib/ipfs";
+import { AuctionCardSkeleton } from "@/components/Skeletons";
 import {
   Gavel,
   Clock,
@@ -39,7 +40,7 @@ const TABS: { key: Tab; label: string }[] = [
 const metadataCache = new Map<string, ArtworkMetadata | null>();
 
 async function getCachedMetadata(
-  cid?: string
+  cid?: string,
 ): Promise<ArtworkMetadata | null> {
   if (!cid) return null;
   if (metadataCache.has(cid)) return metadataCache.get(cid) ?? null;
@@ -118,8 +119,9 @@ function AuctionCard({ auction }: { auction: Auction }) {
 
         {/* Status badge */}
         <span
-          className={`absolute top-3 right-3 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${STATUS_COLOR[auction.status] ?? ""
-            }`}
+          className={`absolute top-3 right-3 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+            STATUS_COLOR[auction.status] ?? ""
+          }`}
         >
           {auction.status}
         </span>
@@ -176,7 +178,7 @@ export default function AuctionsPage() {
           if (!a.metadata_cid) return;
           const meta = await getCachedMetadata(a.metadata_cid);
           entries.push([a.metadata_cid, meta]);
-        })
+        }),
       );
       if (!cancelled) setMetadataMap(new Map(entries));
     };
@@ -236,10 +238,11 @@ export default function AuctionsPage() {
                   <button
                     key={key}
                     onClick={() => setTab(key)}
-                    className={`rounded-full px-4 py-1.5 text-sm font-medium transition-all ${isActive
+                    className={`rounded-full px-4 py-1.5 text-sm font-medium transition-all ${
+                      isActive
                         ? "bg-brand-500 text-white shadow-md shadow-brand-500/20"
                         : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                      }`}
+                    }`}
                   >
                     {label}
                     {key === "all" && (
@@ -300,17 +303,7 @@ export default function AuctionsPage() {
         {isLoading && !error && (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {Array.from({ length: 8 }).map((_, i) => (
-              <div
-                key={i}
-                className="animate-pulse rounded-2xl border border-gray-100 bg-white overflow-hidden"
-              >
-                <div className="aspect-square bg-gray-100" />
-                <div className="p-4 space-y-3">
-                  <div className="h-4 w-3/4 rounded bg-gray-100" />
-                  <div className="h-3 w-1/2 rounded bg-gray-100" />
-                  <div className="h-3 w-1/3 rounded bg-gray-100" />
-                </div>
-              </div>
+              <AuctionCardSkeleton key={i} />
             ))}
           </div>
         )}

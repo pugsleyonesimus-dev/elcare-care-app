@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, BytesN, Env, Vec};
+use soroban_sdk::{Address, BytesN, Env, String, Vec};
 
 use crate::types::{CollectionKind, CollectionRecord, DataKey, Error};
 
@@ -31,6 +31,16 @@ pub fn set_platform_fee(env: &Env, receiver: &Address, bps: u32) {
         .instance()
         .set(&DataKey::PlatformFeeReceiver, receiver);
     env.storage().instance().set(&DataKey::PlatformFeeBps, &bps);
+}
+
+pub fn set_deploy_fee_only(env: &Env, fee: u32) {
+    env.storage().instance().set(&DataKey::PlatformFeeBps, &fee);
+}
+
+pub fn set_treasury_only(env: &Env, treasury: &Address) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PlatformFeeReceiver, treasury);
 }
 
 pub fn get_platform_fee(env: &Env) -> (Address, u32) {
@@ -113,7 +123,28 @@ pub fn all_collections(env: &Env) -> Vec<CollectionRecord> {
     result
 }
 
-// Counter for total collections ever deployed through this launchpad.
+/// Paginated read of global collections (#37).
+pub fn get_collections_paginated(env: &Env, start: u64, limit: u32) -> Vec<CollectionRecord> {
+    let total = collection_count(env);
+    let mut result = Vec::new(env);
+    let end = (start + limit as u64).min(total);
+    let mut i = start;
+    while i < end {
+        if let Some(rec) = collection_by_index(env, i) {
+            result.push_back(rec);
+        }
+        i += 1;
+    }
+    result
+}
+
+/// Look up a single collection by its deployed address (#37).
+pub fn get_collection_by_address(env: &Env, address: &Address) -> Option<CollectionRecord> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CollectionByAddress(address.clone()))
+}
+
 pub fn collection_count(env: &Env) -> u64 {
     env.storage()
         .persistent()
@@ -121,21 +152,45 @@ pub fn collection_count(env: &Env) -> u64 {
         .unwrap_or(0)
 }
 
-// ── Private helpers ───────────────────────────────────────────────────
-
 pub fn require_admin(env: &Env) -> Result<Address, Error> {
     let admin = get_admin(env).ok_or(Error::NotInitialized)?;
     admin.require_auth();
     Ok(admin)
 }
-pub fn record_collection(env: &Env, creator: &Address, address: &Address, kind: CollectionKind) {
+
+/// Record a newly deployed collection with full metadata (#37 + #38).
+#[allow(clippy::too_many_arguments)]
+pub fn record_collection(
+    env: &Env,
+    creator: &Address,
+    address: &Address,
+    kind: CollectionKind,
+    name: &String,
+    symbol: &String,
+    ledger: u32,
+    platform_fee_bps: u32,
+) {
     let rec = CollectionRecord {
         address: address.clone(),
         kind,
         creator: creator.clone(),
+        name: name.clone(),
+        symbol: symbol.clone(),
+        ledger,
+        platform_fee_bps,
     };
 
-    // Global indexed storage (#51) — each record in its own key, no Vec bloat
+    // Index by address for O(1) lookup (#37)
+    env.storage()
+        .persistent()
+        .set(&DataKey::CollectionByAddress(address.clone()), &rec);
+    env.storage().persistent().extend_ttl(
+        &DataKey::CollectionByAddress(address.clone()),
+        TTL_THRESHOLD,
+        TTL_BUMP,
+    );
+
+    // Global indexed storage — each record in its own key
     let global_idx = collection_count(env);
     env.storage()
         .persistent()
@@ -146,7 +201,7 @@ pub fn record_collection(env: &Env, creator: &Address, address: &Address, kind: 
         TTL_BUMP,
     );
 
-    // Per-creator indexed storage (#51) — same pattern per creator
+    // Per-creator indexed storage
     let creator_count: u64 = env
         .storage()
         .persistent()
@@ -173,14 +228,12 @@ pub fn record_collection(env: &Env, creator: &Address, address: &Address, kind: 
         .set(&DataKey::CollectionCount, &next);
 }
 
-/// Get a collection by global index.
 pub fn collection_by_index(env: &Env, index: u64) -> Option<CollectionRecord> {
     env.storage()
         .persistent()
         .get(&DataKey::CollectionByIndex(index))
 }
 
-/// Get per-creator collection count.
 pub fn creator_collection_count(env: &Env, creator: &Address) -> u64 {
     env.storage()
         .persistent()
@@ -188,7 +241,6 @@ pub fn creator_collection_count(env: &Env, creator: &Address) -> u64 {
         .unwrap_or(0)
 }
 
-/// Get a creator's collection by index.
 pub fn creator_collection_by_index(
     env: &Env,
     creator: &Address,

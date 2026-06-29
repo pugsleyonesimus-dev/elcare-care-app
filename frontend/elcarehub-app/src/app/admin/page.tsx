@@ -4,9 +4,11 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useWallet } from "@/hooks/useWallet";
 import { useAdminStats, useModeration, useTokenManagement, useAdminCheck } from "@/hooks/useAdmin";
+import { useAdminSession } from "@/hooks/useAdminSession";
+import { AdminConfirmationModal } from "@/components/AdminConfirmationModal";
 import {
     Users,
     Palette,
@@ -21,7 +23,9 @@ import {
     Lock,
     Loader2,
     CheckCircle2,
-    AlertCircle
+    AlertCircle,
+    KeyRound,
+    History
 } from "lucide-react";
 import { stroopsToXlm } from "@/lib/contract";
 
@@ -40,6 +44,8 @@ export default function AdminPage() {
         refresh: refreshTokens
     } = useTokenManagement(publicKey);
 
+    const { isAuthenticated, authenticate, logout, sessionExpiresIn } = useAdminSession();
+
     // Local state for moderation search
     const [artistSearch, setArtistSearch] = useState("");
     const [searchResult, setSearchResult] = useState<{ address: string; isRevoked: boolean } | null>(null);
@@ -47,6 +53,23 @@ export default function AdminPage() {
 
     // Local state for token management
     const [newTokenAddress, setNewTokenAddress] = useState("");
+
+    // Confirmation Modal state
+    const [confirmConfig, setConfirmConfig] = useState<{
+        isOpen: boolean;
+        title: string;
+        actionDescription: string;
+        consequences: string[];
+        onConfirm: () => void;
+        variant: "danger" | "warning" | "info";
+    }>({
+        isOpen: false,
+        title: "",
+        actionDescription: "",
+        consequences: [],
+        onConfirm: () => { },
+        variant: "danger"
+    });
 
     const handleSearchArtist = async () => {
         if (!artistSearch) return;
@@ -61,25 +84,71 @@ export default function AdminPage() {
 
     const handleToggleArtistStatus = async () => {
         if (!searchResult) return;
-        const success = searchResult.isRevoked
-            ? await reinstate(searchResult.address)
-            : await revoke(searchResult.address);
 
-        if (success) {
-            setSearchResult({ ...searchResult, isRevoked: !searchResult.isRevoked });
-        }
+        const action = searchResult.isRevoked ? "reinstate" : "revoke";
+        
+        setConfirmConfig({
+            isOpen: true,
+            title: searchResult.isRevoked ? "Reinstate Artist" : "Revoke Artist",
+            actionDescription: `${searchResult.isRevoked ? "Restoring" : "Removing"} permissions for artist ${searchResult.address}.`,
+            consequences: searchResult.isRevoked 
+                ? ["Artist will be able to create new listings and auctions again.", "Their existing profile will be visible to all users."]
+                : ["Artist will no longer be able to create new listings or auctions.", "This action will be recorded on the blockchain.", "Existing listings may need to be manually managed."],
+            variant: searchResult.isRevoked ? "info" : "danger",
+            onConfirm: async () => {
+                const success = searchResult.isRevoked
+                    ? await reinstate(searchResult.address)
+                    : await revoke(searchResult.address);
+
+                if (success) {
+                    setSearchResult({ ...searchResult, isRevoked: !searchResult.isRevoked });
+                    setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+                }
+            }
+        });
     };
 
     const handleWhitelistToken = async () => {
         if (!newTokenAddress) return;
-        const success = await whitelist(newTokenAddress);
-        if (success) {
-            setNewTokenAddress("");
-        }
+
+        setConfirmConfig({
+            isOpen: true,
+            title: "Whitelist Token",
+            actionDescription: `Adding token ${newTokenAddress} to the whitelisted payment options.`,
+            consequences: [
+                "Users will be able to list and buy NFTs using this token.",
+                "The marketplace contract will interact with this token contract.",
+                "Ensure the token address is correct and the token is trusted."
+            ],
+            variant: "info",
+            onConfirm: async () => {
+                const success = await whitelist(newTokenAddress);
+                if (success) {
+                    setNewTokenAddress("");
+                    setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+                }
+            }
+        });
     };
 
     const handleRemoveToken = async (addr: string) => {
-        await unwhitelist(addr);
+        setConfirmConfig({
+            isOpen: true,
+            title: "Remove Token from Whitelist",
+            actionDescription: `Removing token ${addr} from whitelisted payment options.`,
+            consequences: [
+                "Users will no longer be able to create new listings using this token.",
+                "Existing listings using this token may become un-purchasable.",
+                "This action is immediate and affects all users."
+            ],
+            variant: "danger",
+            onConfirm: async () => {
+                const success = await unwhitelist(addr);
+                if (success) {
+                    setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+                }
+            }
+        });
     };
 
     if (isCheckingAdmin) {
@@ -107,27 +176,66 @@ export default function AdminPage() {
         );
     }
 
+    if (!isAuthenticated) {
+        return (
+            <div className="flex h-[80vh] flex-col items-center justify-center px-4 text-center">
+                <div className="mb-6 rounded-full bg-brand-100 p-6">
+                    <ShieldCheck className="h-12 w-12 text-brand-600" />
+                </div>
+                <h1 className="font-display text-4xl font-bold tracking-tight text-midnight-900 sm:text-5xl">
+                    Admin Session Required
+                </h1>
+                <p className="mt-4 max-w-lg text-lg text-gray-600 mb-8">
+                    To perform sensitive administrative actions, you must start a secure session.
+                    This session will automatically expire after 15 minutes of inactivity.
+                </p>
+                <button
+                    onClick={authenticate}
+                    className="flex items-center gap-2 rounded-2xl bg-brand-600 px-8 py-4 text-lg font-bold text-white shadow-lg shadow-brand-200 transition-all hover:bg-brand-700 active:scale-95"
+                >
+                    <KeyRound className="h-6 w-6" />
+                    Start Admin Session
+                </button>
+            </div>
+        );
+    }
+
     return (
         <div className="min-h-screen bg-brand-50 pb-20 pt-10">
             <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
                 {/* Header */}
                 <div className="mb-10 flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
                     <div>
-                        <span className="inline-flex items-center rounded-full bg-brand-100 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-brand-700">
-                            Admin Control Center
-                        </span>
+                        <div className="flex items-center gap-2 mb-2">
+                            <span className="inline-flex items-center rounded-full bg-brand-100 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-brand-700">
+                                Admin Control Center
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700">
+                                <History className="h-3 w-3" />
+                                Session: {Math.floor(sessionExpiresIn / 60000)}m remaining
+                            </span>
+                        </div>
                         <h1 className="mt-3 font-display text-4xl font-bold text-midnight-950 sm:text-5xl">
                             Marketplace <span className="text-brand-500">Overview</span>
                         </h1>
                     </div>
-                    <button
-                        type="button"
-                        onClick={() => { refreshStats(); refreshTokens(); }}
-                        className="flex items-center gap-2 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-midnight-900 shadow-sm transition-all hover:bg-brand-50 hover:shadow-md border border-brand-100"
-                    >
-                        <Loader2 className={`h-4 w-4 ${isLoadingStats || isLoadingTokens ? 'animate-spin' : ''}`} />
-                        Refresh Data
-                    </button>
+                    <div className="flex gap-3">
+                        <button
+                            type="button"
+                            onClick={logout}
+                            className="flex items-center gap-2 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-red-600 shadow-sm transition-all hover:bg-red-50 border border-red-100"
+                        >
+                            End Session
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => { refreshStats(); refreshTokens(); }}
+                            className="flex items-center gap-2 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-midnight-900 shadow-sm transition-all hover:bg-brand-50 hover:shadow-md border border-brand-100"
+                        >
+                            <Loader2 className={`h-4 w-4 ${isLoadingStats || isLoadingTokens ? 'animate-spin' : ''}`} />
+                            Refresh Data
+                        </button>
+                    </div>
                 </div>
 
                 <div className="mb-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
@@ -377,6 +485,17 @@ export default function AdminPage() {
                     </section>
                 </div>
             </div >
+
+            <AdminConfirmationModal
+                isOpen={confirmConfig.isOpen}
+                onClose={() => setConfirmConfig(prev => ({ ...prev, isOpen: false }))}
+                onConfirm={confirmConfig.onConfirm}
+                title={confirmConfig.title}
+                actionDescription={confirmConfig.actionDescription}
+                consequences={confirmConfig.consequences}
+                variant={confirmConfig.variant}
+                isProcessing={isModerating || isManagingTokens}
+            />
         </div >
     );
 }

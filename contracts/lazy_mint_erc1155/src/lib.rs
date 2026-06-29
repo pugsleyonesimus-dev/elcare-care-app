@@ -5,14 +5,23 @@
 //! times for the same token_id as long as their cumulative amount stays ≤
 //! `buyer_quota`.  This mirrors edition-based lazy drops.
 //!
+//! # Voucher replay protection (#39)
+//! Each voucher carries a `nonce: u64`. Once a voucher's nonce is redeemed
+//! the contract stores it in `RedeemedVoucher(nonce)` and rejects any further
+//! submission of that same nonce with `VoucherAlreadyRedeemed`.
+//!
 //! Signed digest:
-//!   sha256(token_id ‖ buyer_quota ‖ price_per_unit ‖ valid_until ‖ uri_hash ‖ currency_xdr)
+//!   sha256(contract_addr ‖ token_id ‖ nonce ‖ buyer_quota ‖ price_per_unit ‖ valid_until ‖ uri_hash ‖ currency_xdr)
+//!
+//! # Platform fee (#38)
+//! `platform_fee_bps` is stored at initialization; priced redemptions split
+//! payment between the platform receiver and the creator.
 #![no_std]
 #![allow(clippy::too_many_arguments, deprecated)]
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token::TokenClient,
-    xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol, Vec,
+    xdr::ToXdr, Address, Bytes, BytesN, Env, String, Vec,
 };
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -27,21 +36,25 @@ pub enum Error {
     InsufficientBalance = 4,
     LengthMismatch = 5,
     VoucherExpired = 6,
-    ExceedsVoucherMax = 7, // cumulative amount > voucher.buyer_quota
+    ExceedsVoucherMax = 7,
     NotCreator = 8,
     EditionNotRegistered = 9,
     EditionAlreadyRegistered = 10,
     InvalidSignature = 11,
     MaxSupplyReached = 12,
+    /// Voucher nonce already redeemed (#39).
+    VoucherAlreadyRedeemed = 13,
 }
 
 // ─── Data types ───────────────────────────────────────────────────────────────
 
+/// Issue #39: `nonce` is the unique voucher identifier for replay protection.
 #[contracttype]
 #[derive(Clone)]
 pub struct MintVoucher1155 {
     pub token_id: u64,
-    pub buyer_quota: u128,    // max per-buyer allocation (replaces max_amount)
+    pub nonce: u64,           // unique per voucher — prevents replay (#39)
+    pub buyer_quota: u128,    // max per-buyer allocation
     pub price_per_unit: i128, // 0 = free
     pub currency: Address,
     pub uri: String,
@@ -58,13 +71,19 @@ pub enum DataKey {
     Name,
     RoyaltyBps,
     RoyaltyReceiver,
-    Balance(Address, u64), // (account, token_id) → u128
+    /// Platform fee receiver (#38).
+    PlatformFeeReceiver,
+    /// Platform fee in basis points (#38).
+    PlatformFeeBps,
+    Balance(Address, u64),
     ApprovedForAll(Address, Address),
     TokenUri(u64),
     TotalSupply(u64),
-    MintedPerBuyer(Address, u64), // (buyer, token_id) → u128 cumulative minted
-    MaxAmount(u64),               // token_id → max_amount from voucher (legacy)
-    EditionMaxSupply(u64),        // token_id → global edition cap (#61)
+    MintedPerBuyer(Address, u64),
+    MaxAmount(u64),
+    EditionMaxSupply(u64),
+    /// Redeemed voucher nonce → bool (#39).
+    RedeemedVoucher(u64),
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -73,8 +92,6 @@ pub enum DataKey {
 pub struct LazyMint1155;
 
 impl LazyMint1155 {
-    /// Helper function to verify signature — panics on invalid signatures
-    /// (ed25519_verify host function aborts on bad sig)
     fn verify_signature_or_panic(
         env: &Env,
         pubkey: &BytesN<32>,
@@ -89,6 +106,7 @@ impl LazyMint1155 {
 impl LazyMint1155 {
     // ── Initializer ───────────────────────────────────────────────────────
 
+    /// Issue #38: accepts per-collection platform fee receiver and rate.
     pub fn initialize(
         env: Env,
         creator: Address,
@@ -96,6 +114,8 @@ impl LazyMint1155 {
         name: String,
         royalty_bps: u32,
         royalty_receiver: Address,
+        platform_fee_receiver: Address,
+        platform_fee_bps: u32,
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Initialized) {
             return Err(Error::AlreadyInitialized);
@@ -112,17 +132,21 @@ impl LazyMint1155 {
         env.storage()
             .instance()
             .set(&DataKey::RoyaltyReceiver, &royalty_receiver);
+        env.storage()
+            .instance()
+            .set(&DataKey::PlatformFeeReceiver, &platform_fee_receiver);
+        env.storage()
+            .instance()
+            .set(&DataKey::PlatformFeeBps, &platform_fee_bps);
         env.storage().instance().extend_ttl(50_000, 100_000);
         Ok(())
     }
 
     // ── Lazy Mint ─────────────────────────────────────────────────────────
 
-    /// Buyer redeems a signed voucher for `amount` copies of `voucher.token_id`.
-    ///
-    /// The buyer can call this multiple times for the same voucher as long as
-    /// the running total stays ≤ `voucher.buyer_quota`.  Good for edition drops
-    /// where the creator wants to limit each buyer's share.
+    /// Issue #39: `voucher.nonce` is tracked in `RedeemedVoucher`; replaying
+    /// the same voucher reverts with `VoucherAlreadyRedeemed`.
+    /// Issue #38: applies platform fee split on priced redemptions.
     pub fn redeem(
         env: Env,
         buyer: Address,
@@ -138,7 +162,16 @@ impl LazyMint1155 {
             return Err(Error::VoucherExpired);
         }
 
-        // 2. Global supply check — edition must be registered (#61)
+        // 2. Replay check by voucher nonce (#39)
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::RedeemedVoucher(voucher.nonce))
+        {
+            return Err(Error::VoucherAlreadyRedeemed);
+        }
+
+        // 3. Global supply check — edition must be registered
         let edition_max: u128 = env
             .storage()
             .persistent()
@@ -155,34 +188,62 @@ impl LazyMint1155 {
             return Err(Error::MaxSupplyReached);
         }
 
-        // 3. Per-buyer quota check
+        // 4. Per-buyer quota check
         let minted_key = DataKey::MintedPerBuyer(buyer.clone(), voucher.token_id);
         let already: u128 = env.storage().persistent().get(&minted_key).unwrap_or(0);
         if already + amount > voucher.buyer_quota {
             return Err(Error::ExceedsVoucherMax);
         }
 
-        // 4. Signature verification (panics tx on bad sig)
+        // 5. Signature verification (panics tx on bad sig)
         let pubkey: BytesN<32> = env
             .storage()
             .instance()
             .get(&DataKey::CreatorPubkey)
             .ok_or(Error::NotInitialized)?;
         let digest = Self::_voucher_digest(&env, &voucher);
-        // Signature verification with proper error handling
         Self::verify_signature_or_panic(&env, &pubkey, &digest, &signature);
 
-        // 5. Payment
+        // 6. Payment with platform fee split (#38)
         if voucher.price_per_unit > 0 {
             let total_price = voucher
                 .price_per_unit
                 .checked_mul(amount as i128)
                 .unwrap_or(i128::MAX);
             let creator: Address = env.storage().instance().get(&DataKey::Creator).unwrap();
-            TokenClient::new(&env, &voucher.currency).transfer(&buyer, &creator, &total_price);
+            let fee_bps: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PlatformFeeBps)
+                .unwrap_or(0);
+            if fee_bps > 0 {
+                let fee_receiver: Address = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::PlatformFeeReceiver)
+                    .unwrap();
+                let fee_amount = (total_price * fee_bps as i128) / 10_000;
+                let creator_amount = total_price - fee_amount;
+                if fee_amount > 0 {
+                    TokenClient::new(&env, &voucher.currency).transfer(
+                        &buyer,
+                        &fee_receiver,
+                        &fee_amount,
+                    );
+                }
+                if creator_amount > 0 {
+                    TokenClient::new(&env, &voucher.currency).transfer(
+                        &buyer,
+                        &creator,
+                        &creator_amount,
+                    );
+                }
+            } else {
+                TokenClient::new(&env, &voucher.currency).transfer(&buyer, &creator, &total_price);
+            }
         }
 
-        // 6. Mint
+        // 7. Mint
         let bal: u128 = env
             .storage()
             .persistent()
@@ -198,7 +259,6 @@ impl LazyMint1155 {
             100_000,
         );
 
-        // Set URI on first mint of this token_id
         if !env
             .storage()
             .persistent()
@@ -228,7 +288,6 @@ impl LazyMint1155 {
             100_000,
         );
 
-        // Update per-buyer counter
         env.storage()
             .persistent()
             .set(&minted_key, &(already + amount));
@@ -236,14 +295,19 @@ impl LazyMint1155 {
             .persistent()
             .extend_ttl(&minted_key, 50_000, 100_000);
 
-        // Emit TransferSingle event for redeem (from zero address)
+        // Mark voucher nonce as redeemed (#39)
+        env.storage()
+            .persistent()
+            .set(&DataKey::RedeemedVoucher(voucher.nonce), &true);
+        env.storage().persistent().extend_ttl(
+            &DataKey::RedeemedVoucher(voucher.nonce),
+            50_000,
+            100_000,
+        );
+
         #[allow(deprecated)]
         env.events().publish(
-            (
-                Symbol::new(&env, "TransferSingle"),
-                buyer.clone(),
-                buyer.clone(),
-            ),
+            (symbol_short!("mint"), creator, buyer.clone()),
             (voucher.token_id, amount),
         );
         Ok(())
@@ -290,7 +354,6 @@ impl LazyMint1155 {
         Self::extend_instance_ttl(&env);
         spender.require_auth();
 
-        // [SECURITY] Allow owner or authorized operator (#48)
         if spender != from && !Self::_is_approved_for_all(&env, &spender, &from) {
             return Err(Error::NotApproved);
         }
@@ -299,7 +362,6 @@ impl LazyMint1155 {
             return Err(Error::LengthMismatch);
         }
 
-        // Emit TransferBatch event (ERC-1155 standard)
         #[allow(deprecated)]
         env.events().publish(
             (
@@ -342,7 +404,6 @@ impl LazyMint1155 {
         Self::extend_instance_ttl(&env);
         spender.require_auth();
 
-        // [SECURITY] Allow owner or authorized operator to burn (#48)
         if spender != from && !Self::_is_approved_for_all(&env, &spender, &from) {
             return Err(Error::NotApproved);
         }
@@ -375,14 +436,9 @@ impl LazyMint1155 {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::TotalSupply(token_id), 50_000, 100_000);
-        // Emit TransferSingle event for burn (to zero address)
         #[allow(deprecated)]
         env.events().publish(
-            (
-                Symbol::new(&env, "TransferSingle"),
-                from.clone(),
-                from.clone(),
-            ),
+            (symbol_short!("burn"), from.clone()),
             (token_id, amount),
         );
         Ok(())
@@ -446,6 +502,13 @@ impl LazyMint1155 {
             .unwrap_or(0)
     }
 
+    /// Returns true if the voucher nonce has already been redeemed (#39).
+    pub fn is_voucher_redeemed(env: Env, nonce: u64) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::RedeemedVoucher(nonce))
+    }
+
     pub fn name(env: Env) -> String {
         env.storage().instance().get(&DataKey::Name).unwrap()
     }
@@ -463,6 +526,19 @@ impl LazyMint1155 {
             env.storage()
                 .instance()
                 .get(&DataKey::RoyaltyBps)
+                .unwrap_or(0),
+        )
+    }
+
+    pub fn platform_fee_info(env: Env) -> (Address, u32) {
+        (
+            env.storage()
+                .instance()
+                .get(&DataKey::PlatformFeeReceiver)
+                .unwrap(),
+            env.storage()
+                .instance()
+                .get(&DataKey::PlatformFeeBps)
                 .unwrap_or(0),
         )
     }
@@ -497,9 +573,8 @@ impl LazyMint1155 {
         Ok(())
     }
 
-    // ── Edition Management (#61) ──────────────────────────────────────────
+    // ── Edition Management ────────────────────────────────────────────────
 
-    /// Creator registers the global edition cap for a token_id before distributing vouchers.
     pub fn register_edition(env: Env, token_id: u64, max_supply: u128) -> Result<(), Error> {
         Self::extend_instance_ttl(&env);
         Self::only_creator(&env)?;
@@ -518,7 +593,6 @@ impl LazyMint1155 {
         Ok(())
     }
 
-    /// View: returns the global edition cap for a token_id (0 if not registered).
     pub fn edition_max_supply(env: Env, token_id: u64) -> u128 {
         env.storage()
             .persistent()
@@ -530,8 +604,6 @@ impl LazyMint1155 {
         env.storage().instance().extend_ttl(50_000, 100_000);
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────
-
     fn only_creator(env: &Env) -> Result<Address, Error> {
         let creator: Address = env
             .storage()
@@ -542,13 +614,12 @@ impl LazyMint1155 {
         Ok(creator)
     }
 
-    /// sha256(token_id ‖ buyer_quota ‖ price_per_unit ‖ valid_until ‖ uri_hash ‖ currency_xdr)
-    /// sha256(contract_addr ‖ token_id ‖ max_amount ‖ price_per_unit ‖ valid_until ‖ uri_hash ‖ currency_xdr)
-    fn _voucher_digest(env: &Env, v: &MintVoucher1155) -> Bytes {
+    /// Signed digest: sha256(contract_addr ‖ token_id ‖ nonce ‖ buyer_quota ‖ price_per_unit ‖ valid_until ‖ uri_hash ‖ currency_xdr)
+    pub fn _voucher_digest(env: &Env, v: &MintVoucher1155) -> Bytes {
         let mut raw = Bytes::new(env);
-        // [SECURITY] Bind signature to this contract instance to prevent replay (#49)
         raw.append(&env.current_contract_address().to_xdr(env));
         raw.extend_from_array(&v.token_id.to_be_bytes());
+        raw.extend_from_array(&v.nonce.to_be_bytes());
         raw.extend_from_array(&v.buyer_quota.to_be_bytes());
         raw.extend_from_array(&v.price_per_unit.to_be_bytes());
         raw.extend_from_array(&v.valid_until.to_be_bytes());
@@ -596,15 +667,9 @@ impl LazyMint1155 {
             50_000,
             100_000,
         );
-        // Emit TransferSingle event with operator (ERC-1155 standard)
         #[allow(deprecated)]
         env.events().publish(
-            (
-                Symbol::new(env, "TransferSingle"),
-                operator.clone(),
-                from.clone(),
-                to.clone(),
-            ),
+            (symbol_short!("transfer"), from.clone(), to.clone()),
             (token_id, amount),
         );
         Ok(())
@@ -648,10 +713,9 @@ impl LazyMint1155 {
             50_000,
             100_000,
         );
-        // Emit TransferSingle event (ERC-1155 standard) - operator is from for direct transfers
         #[allow(deprecated)]
         env.events().publish(
-            (Symbol::new(env, "TransferSingle"), from.clone(), to.clone()),
+            (symbol_short!("transfer"), from.clone(), to.clone()),
             (token_id, amount),
         );
         Ok(())
@@ -664,4 +728,5 @@ impl LazyMint1155 {
             .unwrap_or(false)
     }
 }
+
 mod test;
