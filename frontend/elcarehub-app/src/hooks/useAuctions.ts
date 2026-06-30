@@ -18,6 +18,7 @@ import { fetchAuctions } from "@/lib/indexer";
 import { uploadImageToIPFS, uploadMetadataToIPFS, ArtworkMetadata } from "@/lib/ipfs";
 import { getReadableErrorMessage } from "@/lib/errors";
 import { useTransientErrorToast } from "./useTransientErrorToast";
+import { useTxToast } from "./useTxToast";
 import { assertSupportedTokenAddress } from "@/lib/token-support";
 import { DEFAULT_TOKEN } from "@/config/tokens";
 
@@ -124,6 +125,7 @@ export function useCreateAuction(creatorPublicKey: string | null) {
   const [progress, setProgress] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   useTransientErrorToast(error);
+  const { run } = useTxToast();
 
   const create = useCallback(
     async (input: CreateAuctionInput): Promise<number | null> => {
@@ -154,22 +156,28 @@ export function useCreateAuction(creatorPublicKey: string | null) {
         setProgress("Uploading metadata to IPFS…");
         const metadataResult = await uploadMetadataToIPFS(metadata, input.title);
 
-        // Step 4: Validate token and call the Soroban contract.
+        // Step 4: Validate token and call the Soroban contract via useTxToast.
         setProgress("Creating on-chain auction…");
         const token = await assertSupportedTokenAddress(
           input.tokenAddress ?? DEFAULT_TOKEN.address,
           "auction"
         );
         const durationSeconds = input.durationHours * 3600;
-        const auctionId = await createAuction(
-          creatorPublicKey,
-          metadataResult.cid,
-          input.reservePriceXlm,
-          durationSeconds,
-          input.royaltyBps,
-          [],
-          token.address
+        const auctionId = await run(
+          () =>
+            createAuction(
+              creatorPublicKey,
+              metadataResult.cid,
+              input.reservePriceXlm,
+              durationSeconds,
+              input.royaltyBps,
+              [],
+              token.address
+            ),
+          { action: "Auction" }
         );
+
+        if (auctionId === null) return null;
 
         setProgress("Auction created successfully!");
         return auctionId;
@@ -180,7 +188,7 @@ export function useCreateAuction(creatorPublicKey: string | null) {
         setIsCreating(false);
       }
     },
-    [creatorPublicKey]
+    [creatorPublicKey, run]
   );
 
   return { create, isCreating, progress, error };
@@ -189,30 +197,19 @@ export function useCreateAuction(creatorPublicKey: string | null) {
 // ── useFinalizeAuction ───────────────────────────────────────
 
 export function useFinalizeAuction(callerPublicKey: string | null) {
-  const [isFinalizing, setIsFinalizing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useTransientErrorToast(error);
+  const { run, isRunning: isFinalizing } = useTxToast();
 
   const finalize = useCallback(
     async (auctionId: number): Promise<boolean> => {
-      if (!callerPublicKey) {
-        setError("Wallet not connected");
-        return false;
-      }
-      setIsFinalizing(true);
-      setError(null);
-      try {
-        await finalizeAuction(callerPublicKey, auctionId);
-        return true;
-      } catch (err: unknown) {
-        setError(getReadableErrorMessage(err, "Failed to finalize auction"));
-        return false;
-      } finally {
-        setIsFinalizing(false);
-      }
+      if (!callerPublicKey) return false;
+      const result = await run(
+        () => finalizeAuction(callerPublicKey, auctionId),
+        { action: "Finalize auction" }
+      );
+      return result !== null;
     },
-    [callerPublicKey]
+    [callerPublicKey, run]
   );
 
-  return { finalize, isFinalizing, error };
+  return { finalize, isFinalizing, error: null };
 }

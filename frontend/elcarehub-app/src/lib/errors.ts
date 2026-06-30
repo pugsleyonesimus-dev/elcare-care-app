@@ -21,7 +21,39 @@ export const SOROBAN_ERROR_MESSAGES: Record<number, string> = {
   20: "This listing has already been sold.",
   21: "This listing has been cancelled.",
   22: "The contract rejected this request for safety reasons.",
+  23: "Insufficient token balance to complete this transaction.",
+  24: "Token allowance is too low. Please approve the required amount.",
 };
+
+/**
+ * Phrases that indicate the user cancelled signing in their wallet extension.
+ * Checked case-insensitively against the raw error message string.
+ */
+const USER_REJECTION_PHRASES: string[] = [
+  "user rejected",
+  "user denied",
+  "user cancelled",
+  "user canceled",
+  "rejected by user",
+  "transaction was rejected",
+  "sign request was rejected",
+  "request rejected",
+];
+
+/**
+ * Returns true when the error was caused by the user explicitly declining
+ * the signing request in their wallet (Freighter, LOBSTR, etc.).
+ */
+export function isUserRejectionError(error: unknown): boolean {
+  const msg =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "";
+  const lower = msg.toLowerCase();
+  return USER_REJECTION_PHRASES.some((phrase) => lower.includes(phrase));
+}
 
 const CONTRACT_CODE_PATTERNS: RegExp[] = [
   /Error\(Contract,\s*#(\d+)\)/i,

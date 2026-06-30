@@ -4,36 +4,24 @@
 
 "use client";
 
-import { useState, useCallback } from "react";
+import { useCallback } from "react";
 import { placeBid } from "@/lib/contract";
-import { getReadableErrorMessage } from "@/lib/errors";
-import { useTransientErrorToast } from "./useTransientErrorToast";
+import { useTxToast } from "./useTxToast";
 
 export function usePlaceBid(bidderPublicKey: string | null) {
-  const [isBidding, setIsBidding] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useTransientErrorToast(error);
+  const { run, isRunning: isBidding } = useTxToast();
 
   const bid = useCallback(
     async (auctionId: number, amountXlm: number): Promise<boolean> => {
-      if (!bidderPublicKey) {
-        setError("Wallet not connected");
-        return false;
-      }
-      setIsBidding(true);
-      setError(null);
-      try {
-        await placeBid(bidderPublicKey, auctionId, amountXlm);
-        return true;
-      } catch (err: unknown) {
-        setError(getReadableErrorMessage(err, "Failed to place bid"));
-        return false;
-      } finally {
-        setIsBidding(false);
-      }
+      if (!bidderPublicKey) return false;
+      const result = await run(
+        () => placeBid(bidderPublicKey, auctionId, amountXlm),
+        { action: "Bid" }
+      );
+      return result !== null;
     },
-    [bidderPublicKey],
+    [bidderPublicKey, run],
   );
 
-  return { bid, isBidding, error };
+  return { bid, isBidding, error: null };
 }

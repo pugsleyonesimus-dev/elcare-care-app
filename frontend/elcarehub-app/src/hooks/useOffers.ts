@@ -20,7 +20,7 @@ import {
 } from "@/lib/contract";
 import { getReadableErrorMessage } from "@/lib/errors";
 import { useTransientErrorToast } from "./useTransientErrorToast";
-import { useToast } from "@/components/ToastProvider";
+import { useTxToast } from "./useTxToast";
 
 // ── useOffererOffers ─────────────────────────────────────────
 
@@ -169,133 +169,80 @@ export function useIncomingOffers(ownerPublicKey: string | null) {
 // ── useWithdrawOffer ─────────────────────────────────────────
 
 export function useWithdrawOffer(publicKey: string | null) {
-  const [isWithdrawing, setIsWithdrawing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useTransientErrorToast(error);
-  const { pushToast } = useToast();
+  const { run, isRunning: isWithdrawing } = useTxToast();
 
   const withdraw = useCallback(
     async (offerId: number): Promise<boolean> => {
-      if (!publicKey) {
-        setError("Wallet not connected");
-        return false;
-      }
-      setIsWithdrawing(true);
-      setError(null);
-      pushToast("Withdrawing offer…", "info");
-      try {
-        await withdrawOffer(publicKey, offerId);
-        pushToast("Offer withdrawn successfully", "success");
-        return true;
-      } catch (err: unknown) {
-        setError(getReadableErrorMessage(err, "Failed to withdraw offer"));
-        return false;
-      } finally {
-        setIsWithdrawing(false);
-      }
+      if (!publicKey) return false;
+      const result = await run(
+        () => withdrawOffer(publicKey, offerId),
+        { action: "Withdraw offer" }
+      );
+      return result !== null;
     },
-    [publicKey, pushToast]
+    [publicKey, run]
   );
 
-  return { withdraw, isWithdrawing, error };
+  return { withdraw, isWithdrawing, error: null };
 }
 
 // ── useAcceptOffer ───────────────────────────────────────────
 
 export function useAcceptOffer(publicKey: string | null) {
-  const [isAccepting, setIsAccepting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useTransientErrorToast(error);
-  const { pushToast } = useToast();
+  const { run, isRunning: isAccepting } = useTxToast();
 
   const accept = useCallback(
     async (offerId: number): Promise<boolean> => {
-      if (!publicKey) {
-        setError("Wallet not connected");
-        return false;
-      }
-      setIsAccepting(true);
-      setError(null);
-      pushToast("Accepting offer…", "info");
-      try {
-        await acceptOffer(publicKey, offerId);
-        pushToast("Offer accepted!", "success");
-        return true;
-      } catch (err: unknown) {
-        setError(getReadableErrorMessage(err, "Failed to accept offer"));
-        return false;
-      } finally {
-        setIsAccepting(false);
-      }
+      if (!publicKey) return false;
+      const result = await run(
+        () => acceptOffer(publicKey, offerId),
+        { action: "Accept offer" }
+      );
+      return result !== null;
     },
-    [publicKey, pushToast]
+    [publicKey, run]
   );
 
-  return { accept, isAccepting, error };
+  return { accept, isAccepting, error: null };
 }
 
 // ── useRejectOffer ───────────────────────────────────────────
 
 export function useRejectOffer(publicKey: string | null) {
-  const [isRejecting, setIsRejecting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useTransientErrorToast(error);
-  const { pushToast } = useToast();
+  const { run, isRunning: isRejecting } = useTxToast();
 
   const reject = useCallback(
     async (offerId: number): Promise<boolean> => {
-      if (!publicKey) {
-        setError("Wallet not connected");
-        return false;
-      }
-      setIsRejecting(true);
-      setError(null);
-      pushToast("Rejecting offer…", "info");
-      try {
-        await rejectOffer(publicKey, offerId);
-        pushToast("Offer rejected", "success");
-        return true;
-      } catch (err: unknown) {
-        setError(getReadableErrorMessage(err, "Failed to reject offer"));
-        return false;
-      } finally {
-        setIsRejecting(false);
-      }
+      if (!publicKey) return false;
+      const result = await run(
+        () => rejectOffer(publicKey, offerId),
+        { action: "Reject offer" }
+      );
+      return result !== null;
     },
-    [publicKey, pushToast]
+    [publicKey, run]
   );
 
-  return { reject, isRejecting, error };
+  return { reject, isRejecting, error: null };
 }
 
 // ── useMakeOffer ─────────────────────────────────────────────
 
 export function useMakeOffer(publicKey: string | null) {
-  const [isOffering, setIsOffering] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useTransientErrorToast(error);
+  const { run, isRunning: isOffering } = useTxToast();
 
   const make = useCallback(
     async (listingId: number, amountXlm: number, tokenAddress: string): Promise<boolean> => {
-      if (!publicKey) {
-        setError("Wallet not connected");
-        return false;
-      }
-      setIsOffering(true);
-      setError(null);
-      try {
-        await makeOffer(publicKey, listingId, amountXlm, tokenAddress);
-        return true;
-      } catch (err: unknown) {
-        setError(getReadableErrorMessage(err, "Failed to make offer"));
-        return false;
-      } finally {
-        setIsOffering(false);
-      }
+      if (!publicKey) return false;
+      const result = await run(
+        () => makeOffer(publicKey, listingId, amountXlm, tokenAddress),
+        { action: "Offer" }
+      );
+      return result !== null;
     },
-    [publicKey]
+    [publicKey, run]
   );
 
-  return { make, isOffering, error };
+  return { make, isOffering, error: null };
 }
 
