@@ -10,7 +10,9 @@ import { rateLimiter } from './api/rate-limit-middleware.js';
 import { metricsMiddleware, handleMetrics } from './metrics.js';
 import { errorHandler } from './api/errors.js';
 import { startReconciler } from './reconciler.js';
-import { validateRequiredEnv } from './config.js';
+import { validateRequiredEnv, loadKeeperConfig } from './config.js';
+import { startKeeper } from './keeper/index.js';
+import { logger } from './logger.js';
 import prisma from './db.js';
 
 dotenv.config();
@@ -119,6 +121,28 @@ const httpServer = app.listen(PORT, () => {
     startReconciler().catch((err) => {
         console.error('[Reconciler] Failed to start:', err);
     });
+
+    // Start the keeper loop when KEEPER_ENABLED=true.
+    // Validated here so a bad config fails loud at startup rather than silently
+    // doing nothing.  Errors are non-fatal to the main indexer process.
+    if (process.env.KEEPER_ENABLED === 'true') {
+        try {
+            const keeperCfg = loadKeeperConfig();
+            logger.info('keeper: enabled — starting loop', {
+                dryRun: keeperCfg.KEEPER_DRY_RUN,
+                intervalMs: keeperCfg.KEEPER_INTERVAL_MS,
+            });
+            startKeeper().catch((err) => {
+                logger.error('keeper: fatal loop error', {
+                    err: err instanceof Error ? err.message : String(err),
+                });
+            });
+        } catch (err) {
+            logger.error('keeper: invalid configuration — keeper not started', {
+                err: err instanceof Error ? err.message : String(err),
+            });
+        }
+    }
 });
 
 // Register HTTP server and SSE cleanup so gracefulShutdown() in poller closes them too.

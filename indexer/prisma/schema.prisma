@@ -135,3 +135,47 @@ model Collection {
   createdAt       DateTime @default(now())
   @@index([creator])
 }
+
+// ── Keeper subsystem ──────────────────────────────────────────────────────────
+//
+// Records every maintenance action the keeper attempts so that restarts never
+// double-submit a pending on-chain transaction.  The lifecycle is:
+//   Pending → Submitted → Succeeded
+//                       → Failed (retryable)
+//                       → Skipped (permanent — e.g. ListingNotExpired contract revert)
+//
+// targetType: "ExpireListing" | "FinalizeAuction" | "ReclaimOffer"
+// targetId  : the listing_id / auction_id / offer_id (BigInt for parity with the
+//             other models)
+
+enum KeeperActionStatus {
+  Pending    // Discovered but not yet submitted
+  Submitted  // Transaction sent; polling for result
+  Succeeded  // getTransaction confirmed success
+  Failed     // All retries exhausted; lastError is set
+  Skipped    // Permanent contract-level rejection (no resubmission)
+}
+
+enum KeeperTargetType {
+  ExpireListing
+  FinalizeAuction
+  ReclaimOffer
+}
+
+model KeeperAction {
+  id          Int                 @id @default(autoincrement())
+  targetType  KeeperTargetType
+  targetId    BigInt
+  txHash      String?
+  status      KeeperActionStatus  @default(Pending)
+  attempts    Int                 @default(0)
+  lastError   String?
+  feePaid     BigInt?             // in stroops; set on Succeeded
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@unique([targetType, targetId])   // idempotency: one live record per target
+  @@index([status])
+  @@index([targetType, status])
+  @@index([updatedAt])
+}

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "backfill": "tsx src/backfill.ts",
+    "keeper": "tsx src/keeper/index.ts",
     "build": "npm run prisma:generate && tsc",
     "prestart": "npx prisma migrate deploy && npm run migrate:status",
     "start": "node dist/index.js",

@@ -82,7 +82,67 @@ export function metricsMiddleware(req: express.Request, res: express.Response, n
   next();
 }
 
-// Expose metrics handler
+// ── Keeper metrics ────────────────────────────────────────────────────────────
+//
+// entry_point label values: "expire_listing" | "finalize_auction" | "reclaim_offer"
+// outcome      label values: "succeeded" | "failed" | "skipped" | "dry_run"
+
+/** Total keeper action attempts, labelled by entry point and final outcome. */
+export const keeperActionsTotal = new client.Counter({
+  name: 'keeper_actions_total',
+  help: 'Total number of keeper maintenance actions attempted, by entry point and outcome',
+  labelNames: ['entry_point', 'outcome'],
+});
+
+/** Total XLM fees spent (in stroops) by the keeper, labelled by entry point. */
+export const keeperFeesSpentStroops = new client.Counter({
+  name: 'keeper_fees_spent_stroops_total',
+  help: 'Cumulative transaction fees paid by the keeper in stroops, by entry point',
+  labelNames: ['entry_point'],
+});
+
+/** Number of times the daily fee budget was exhausted, halting the cycle. */
+export const keeperBudgetExhaustedTotal = new client.Counter({
+  name: 'keeper_budget_exhausted_total',
+  help: 'Number of times the keeper halted because the daily fee budget was exhausted',
+});
+
+/** Gauge set to 1 when the daily fee budget is currently exhausted, 0 otherwise. */
+export const keeperBudgetExhaustedGauge = new client.Gauge({
+  name: 'keeper_budget_exhausted',
+  help: '1 when the keeper daily fee budget is currently exhausted, 0 otherwise',
+});
+
+/** Number of simulation failures (RPC-level, not contract reverts), by entry point. */
+export const keeperSimulationFailuresTotal = new client.Counter({
+  name: 'keeper_simulation_failures_total',
+  help: 'Number of simulateTransaction failures (RPC errors, not contract reverts)',
+  labelNames: ['entry_point'],
+});
+
+/** Duration of each full keeper sweep cycle in seconds. */
+export const keeperCycleDurationSeconds = new client.Histogram({
+  name: 'keeper_cycle_duration_seconds',
+  help: 'Duration of a complete keeper sweep cycle in seconds',
+  buckets: [0.1, 0.5, 1, 5, 10, 30, 60, 120],
+});
+
+/** How many candidates were discovered in the last sweep, by type. */
+export const keeperCandidatesDiscovered = new client.Gauge({
+  name: 'keeper_candidates_discovered',
+  help: 'Number of actionable candidates discovered in the most recent sweep, by target type',
+  labelNames: ['target_type'],
+});
+
+/** Number of fee-bump escalations triggered, by entry point. */
+export const keeperFeeBumpsTotal = new client.Counter({
+  name: 'keeper_fee_bumps_total',
+  help: 'Number of fee-bump resubmissions triggered due to timeout or fee errors',
+  labelNames: ['entry_point'],
+});
+
+// ── Expose metrics handler ────────────────────────────────────────────────────
+
 export async function handleMetrics(req: express.Request, res: express.Response) {
   try {
     res.set('Content-Type', client.register.contentType);

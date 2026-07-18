@@ -565,4 +565,52 @@ router.get('/artists/:address/metrics', cacheMiddleware(60), async (req: Request
   }
 });
 
+// ── GET /keeper/status ────────────────────────────────────────────────────────
+//
+// Returns the keeper's current operational state:
+//   - whether it is running and in dry-run mode
+//   - aggregate counts by KeeperActionStatus
+//   - the most recent 20 actions (for quick operator triage)
+//   - stats from the last completed cycle
+
+router.get('/keeper/status', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // Lazy-import to avoid a hard dependency when the keeper is disabled.
+    const { getLastCycleStats, isKeeperRunning } = await import('../keeper/index.js');
+    const { getActionSummary, getRecentActions } = await import('../keeper/idempotency.js');
+
+    const [summary, recent, lastCycle] = await Promise.all([
+      getActionSummary(),
+      getRecentActions(20),
+      Promise.resolve(getLastCycleStats()),
+    ]);
+
+    const payload = {
+      running:       isKeeperRunning(),
+      dryRun:        process.env.KEEPER_DRY_RUN !== 'false',
+      enabled:       process.env.KEEPER_ENABLED === 'true',
+      actionCounts:  summary,
+      lastCycle: lastCycle
+        ? {
+            startedAt:            lastCycle.startedAt,
+            completedAt:          lastCycle.completedAt,
+            candidatesDiscovered: lastCycle.candidatesDiscovered,
+            actionsAttempted:     lastCycle.actionsAttempted,
+            actionsSucceeded:     lastCycle.actionsSucceeded,
+            actionsFailed:        lastCycle.actionsFailed,
+            actionsSkipped:       lastCycle.actionsSkipped,
+            feesSpentStroops:     lastCycle.feesSpentStroops.toString(),
+            budgetExhausted:      lastCycle.budgetExhausted,
+            dryRun:               lastCycle.dryRun,
+          }
+        : null,
+      recentActions: serialize(recent),
+    };
+
+    res.json(payload);
+  } catch (err) {
+    next(internalError('Failed to fetch keeper status'));
+  }
+});
+
 export default router;
