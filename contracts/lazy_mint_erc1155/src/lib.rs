@@ -437,10 +437,8 @@ impl LazyMint1155 {
             .persistent()
             .extend_ttl(&DataKey::TotalSupply(token_id), 50_000, 100_000);
         #[allow(deprecated)]
-        env.events().publish(
-            (symbol_short!("burn"), from.clone()),
-            (token_id, amount),
-        );
+        env.events()
+            .publish((symbol_short!("burn"), from.clone()), (token_id, amount));
         Ok(())
     }
 

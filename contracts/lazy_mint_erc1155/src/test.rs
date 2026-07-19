@@ -655,11 +655,7 @@ fn burn_with_missing_total_supply_key_returns_zero_not_amount() {
 
 // ─── Issue #39 — Voucher nonce / replay protection tests ─────────────────────
 
-fn make_voucher_1155_with_nonce(
-    env: &Env,
-    token_id: u64,
-    nonce: u64,
-) -> MintVoucher1155 {
+fn make_voucher_1155_with_nonce(env: &Env, token_id: u64, nonce: u64) -> MintVoucher1155 {
     MintVoucher1155 {
         token_id,
         nonce,

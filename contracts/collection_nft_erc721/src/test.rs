@@ -747,10 +747,7 @@ fn token_uri_boundary_token_id_zero() {
     client.set_base_uri(&String::from_str(&env, "https://x/"));
     let id = client.mint(&alice, &String::from_str(&env, "u"));
     assert_eq!(id, 0u64);
-    assert_eq!(
-        client.token_uri(&id),
-        String::from_str(&env, "https://x/0")
-    );
+    assert_eq!(client.token_uri(&id), String::from_str(&env, "https://x/0"));
 }
 
 #[test]
@@ -783,10 +780,7 @@ fn base_uri_update_changes_token_uri_for_all_tokens() {
     client.mint(&alice, &String::from_str(&env, "old-uri-1"));
 
     // Before base URI is set, per-token URIs are returned.
-    assert_eq!(
-        client.token_uri(&0u64),
-        String::from_str(&env, "old-uri-0")
-    );
+    assert_eq!(client.token_uri(&0u64), String::from_str(&env, "old-uri-0"));
 
     // Set base URI — overrides all tokens.
     client.set_base_uri(&String::from_str(&env, "https://new/"));
@@ -949,7 +943,9 @@ fn set_token_royalty_max_bps_succeeds() {
     let token_recv = Address::generate(&env);
     let id = client.mint(&alice, &String::from_str(&env, "uri"));
 
-    assert!(client.try_set_token_royalty(&id, &token_recv, &10_000u32).is_ok());
+    assert!(client
+        .try_set_token_royalty(&id, &token_recv, &10_000u32)
+        .is_ok());
 
     let (recv, amount) = client.royalty_info_for(&id, &1_000i128);
     assert_eq!(recv, token_recv);
@@ -1006,7 +1002,7 @@ fn royalty_info_for_rounds_down_fractional_amount() {
     let id = client.mint(&alice, &String::from_str(&env, "uri"));
 
     client.set_default_royalty(&recv, &333u32); // 3.33%
-    // 1_000 * 333 / 10_000 = 33.3 → rounds down to 33
+                                                // 1_000 * 333 / 10_000 = 33.3 → rounds down to 33
     let (_, amount) = client.royalty_info_for(&id, &1_000i128);
     assert_eq!(amount, 33i128);
 }
@@ -1198,13 +1194,17 @@ fn multiple_pause_unpause_cycles_work_correctly() {
     let alice = Address::generate(&env);
 
     client.pause();
-    assert!(client.try_mint(&alice, &String::from_str(&env, "uri")).is_err());
+    assert!(client
+        .try_mint(&alice, &String::from_str(&env, "uri"))
+        .is_err());
 
     client.unpause();
     client.mint(&alice, &String::from_str(&env, "uri"));
 
     client.pause();
-    assert!(client.try_mint(&alice, &String::from_str(&env, "uri2")).is_err());
+    assert!(client
+        .try_mint(&alice, &String::from_str(&env, "uri2"))
+        .is_err());
 
     client.unpause();
     client.mint(&alice, &String::from_str(&env, "uri3"));
