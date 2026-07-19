@@ -5,7 +5,8 @@ import dotenv from 'dotenv';
 import {
   latestLedgerProcessedGauge,
   networkLatestLedgerGauge,
-  syncLatencyGauge
+  syncLatencyGauge,
+  duplicateEventsCounter,
 } from './metrics.js';
 import { recordProgress } from './stall.js';
 import { collectMarketplaceEvents, MAX_LEDGER_WINDOW } from './event-sync.js';
@@ -349,42 +350,43 @@ async function fetchAuctionFromChain(_auctionId: bigint): Promise<any | null> {
 }
 
 export async function applyDecodedEvents(decodedEvents: any[], tx: any) {
-  const conditions = decodedEvents.map((event) => ({
-    listingId: event.listingId ?? null,
-    eventType: event.eventType,
-    ledgerSequence: event.ledgerSequence,
-  }));
+  if (decodedEvents.length === 0) return [];
 
-  const existing = conditions.length
-    ? await tx.marketplaceEvent.findMany({
-        where: { OR: conditions },
-        select: { listingId: true, eventType: true, ledgerSequence: true },
-      })
-    : [];
+  const toInsert: any[] = [];
 
-  const existingSet = new Set(
-    existing.map((event: any) => `${event.listingId ?? 'null'}|${event.eventType}|${event.ledgerSequence}`)
-  );
+  for (const event of decodedEvents) {
+    const eventHash: string = event.eventHash ?? '';
 
-  const toInsert = decodedEvents.filter(
-    (event: any) => !existingSet.has(`${event.listingId ?? 'null'}|${event.eventType}|${event.ledgerSequence}`)
-  );
+    // Upsert on eventHash — the unique identity of this on-chain event.
+    // On conflict (duplicate) the update is a no-op; we detect it by checking
+    // whether the row's id changed (Prisma returns the upserted row).
+    const existing = eventHash
+      ? await tx.marketplaceEvent.findUnique({ where: { eventHash }, select: { id: true } })
+      : null;
 
-  if (toInsert.length > 0) {
-    await tx.marketplaceEvent.createMany({
-      data: toInsert.map((event) => ({
-        listingId: event.listingId,
+    if (existing) {
+      duplicateEventsCounter.inc();
+      logger.debug('[Dedup] Skipping duplicate event', {
+        eventHash,
+        eventType: event.eventType,
+        ledger: event.ledgerSequence,
+      });
+      continue;
+    }
+
+    await tx.marketplaceEvent.create({
+      data: {
+        listingId: event.listingId ?? null,
         eventType: event.eventType,
         actor: event.actor,
         data: event.data,
         ledgerSequence: event.ledgerSequence,
-      })),
-      skipDuplicates: true,
+        eventHash,
+      },
     });
 
-    for (const event of toInsert) {
-      await processEvent(event, tx, true);
-    }
+    toInsert.push(event);
+    await processEvent(event, tx, true);
   }
 
   return toInsert;
@@ -403,6 +405,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
         actor,
         ledgerSequence,
         data,
+        eventHash: event.eventHash ?? '',
       },
     });
   }

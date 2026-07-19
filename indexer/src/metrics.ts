@@ -32,6 +32,11 @@ export const decodeErrorsCounter = new client.Counter({
   help: 'Total number of XDR event decode errors encountered during sync',
 });
 
+export const duplicateEventsCounter = new client.Counter({
+  name: 'elcarehub_duplicate_events_total',
+  help: 'Total number of duplicate on-chain events skipped during idempotent processing',
+});
+
 export const httpRequestDurationMicroseconds = new client.Histogram({
   name: 'http_request_duration_seconds',
   help: 'Duration of HTTP requests in seconds',

@@ -116,6 +116,7 @@ model MarketplaceEvent {
   data            Json
   ledgerSequence  Int
   ledgerTimestamp DateTime @default(now())
+  eventHash       String   @unique @default("")  // SHA256(contractId:ledger:txHash:eventIndex)
   @@index([actor])
   @@index([eventType])
   @@index([listingId])

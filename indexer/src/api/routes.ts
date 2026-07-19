@@ -5,6 +5,8 @@ import { cacheMiddleware } from './cache-middleware.js';
 import { etagMiddleware } from './etag-middleware.js';
 import { strictRateLimiter } from './rate-limit-middleware.js';
 import { badRequest, notFound, internalError } from './errors.js';
+import { applyDecodedEvents } from '../poller.js';
+import { collectMarketplaceEvents } from '../event-sync.js';
 import {
   validateQuery,
   listingsQuerySchema,
@@ -659,6 +661,49 @@ router.get('/stats/top-artists', validateQuery(statsTopQuerySchema), async (req:
     res.json(serialize(result));
   } catch (err) {
     next(internalError('Failed to fetch top artists'));
+  }
+});
+
+// ── POST /admin/reprocess-ledger/:sequence ────────────────────────────────────
+// Re-fetches and re-processes all contract events for a specific ledger.
+// Safe to call multiple times — idempotent via eventHash deduplication.
+
+const RPC_URL = process.env.STELLAR_RPC_URL || 'https://soroban-testnet.stellar.org';
+
+router.post('/admin/reprocess-ledger/:sequence', strictRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  const seq = req.params.sequence;
+  if (!/^\d+$/.test(seq)) {
+    return next(badRequest('sequence must be a positive integer'));
+  }
+  const ledger = parseInt(seq, 10);
+
+  try {
+    const contractIds = [
+      process.env.MARKETPLACE_CONTRACT_ID,
+      process.env.LAUNCHPAD_CONTRACT_ID,
+    ].filter(Boolean) as string[];
+
+    if (contractIds.length === 0) {
+      return next(badRequest('No contract IDs configured'));
+    }
+
+    const { rpc } = await import('@stellar/stellar-sdk');
+    const server = new rpc.Server(RPC_URL);
+
+    const events = await collectMarketplaceEvents(server, contractIds, ledger, ledger);
+
+    const inserted = await prisma.$transaction((tx: Parameters<typeof applyDecodedEvents>[1]) =>
+      applyDecodedEvents(events, tx)
+    );
+
+    res.json({
+      ledger,
+      fetched: events.length,
+      inserted: inserted.length,
+      duplicatesSkipped: events.length - inserted.length,
+    });
+  } catch (err) {
+    next(internalError('Failed to reprocess ledger'));
   }
 });
 
