@@ -175,7 +175,13 @@ impl Launchpad {
                 &receiver,
                 &(fee as i128),
             );
-            events::publish_deployment_fee_collected(&env, &creator, &receiver, fee as i128, &currency);
+            events::publish_deployment_fee_collected(
+                &env,
+                &creator,
+                &receiver,
+                fee as i128,
+                &currency,
+            );
         }
 
         let wasm = storage::get_wasm_normal_721(&env).ok_or(Error::WasmHashNotSet)?;
@@ -234,7 +240,13 @@ impl Launchpad {
                 &receiver,
                 &(fee as i128),
             );
-            events::publish_deployment_fee_collected(&env, &creator, &receiver, fee as i128, &currency);
+            events::publish_deployment_fee_collected(
+                &env,
+                &creator,
+                &receiver,
+                fee as i128,
+                &currency,
+            );
         }
 
         let wasm = storage::get_wasm_normal_1155(&env).ok_or(Error::WasmHashNotSet)?;
@@ -298,7 +310,13 @@ impl Launchpad {
                 &platform_fee_receiver,
                 &(fee as i128),
             );
-            events::publish_deployment_fee_collected(&env, &creator, &receiver, fee as i128, &currency);
+            events::publish_deployment_fee_collected(
+                &env,
+                &creator,
+                &receiver,
+                fee as i128,
+                &currency,
+            );
         }
 
         let wasm = storage::get_wasm_lazy_721(&env).ok_or(Error::WasmHashNotSet)?;
@@ -361,7 +379,13 @@ impl Launchpad {
                 &platform_fee_receiver,
                 &(fee as i128),
             );
-            events::publish_deployment_fee_collected(&env, &creator, &receiver, fee as i128, &currency);
+            events::publish_deployment_fee_collected(
+                &env,
+                &creator,
+                &receiver,
+                fee as i128,
+                &currency,
+            );
         }
 
         let wasm = storage::get_wasm_lazy_1155(&env).ok_or(Error::WasmHashNotSet)?;

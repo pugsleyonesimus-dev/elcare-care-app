@@ -1,12 +1,13 @@
 /**
  * Tests for database connection pooling and timeout configuration
  */
+import { vi } from 'vitest';
 
 describe('Database pooling configuration', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
-    jest.resetModules();
+    vi.resetModules();
     process.env = { ...originalEnv };
   });
 

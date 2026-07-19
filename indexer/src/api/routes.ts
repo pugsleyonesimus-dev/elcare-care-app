@@ -2,8 +2,11 @@ import { Router, Request, Response, NextFunction } from 'express';
 import prisma from '../db.js';
 import redis from '../redis.js';
 import { cacheMiddleware } from './cache-middleware.js';
+import { etagMiddleware } from './etag-middleware.js';
 import { strictRateLimiter } from './rate-limit-middleware.js';
 import { badRequest, notFound, internalError } from './errors.js';
+import { applyDecodedEvents } from '../poller.js';
+import { collectMarketplaceEvents } from '../event-sync.js';
 import {
   validateQuery,
   listingsQuerySchema,
@@ -12,7 +15,14 @@ import {
   walletActivityQuerySchema,
   collectionsQuerySchema,
   statsQuerySchema,
+  syncGapsQuerySchema,
 } from './query-schemas.js';
+import {
+  getOverviewStats,
+  getDailyStats,
+  getTopCollections,
+  getTopArtists,
+} from '../stats.js';
 
 // ── SSE registry ───────────────────────────────────────────────────────────────
 
@@ -40,8 +50,7 @@ export function _resetSseState() {
   sseClients.clear();
 }
 
-// SSE clients registry
-const sseClients: Response[] = [];
+// SSE clients registry — keyed by Response, value is last-seen event ID
 
 export function emitSSEEvent(event: any) {
   const id = nextSseId();
@@ -63,10 +72,10 @@ export function emitSSEEvent(event: any) {
 }
 
 export function closeSSEClients(): void {
-    for (const client of sseClients) {
+    for (const [client] of sseClients) {
         try { client.end(); } catch { /* ignore */ }
     }
-    sseClients.length = 0;
+    sseClients.clear();
 }
 
 const router = Router();
@@ -190,12 +199,22 @@ router.get('/listings/:id/history', async (req: Request, res: Response, next: Ne
   if (!/^\d+$/.test(id)) {
     return next(badRequest('Invalid ID format'));
   }
+
+  const limit  = Math.min(parseInt(String(req.query.limit  ?? '100'), 10) || 100, 500);
+  const offset = Math.min(parseInt(String(req.query.offset ?? '0'),   10) || 0,   10000);
+
   try {
-    const results = await prisma.marketplaceEvent.findMany({
-      where: { listingId: BigInt(id) },
-      orderBy: { ledgerSequence: 'asc' },
-    });
-    res.json(serialize(results));
+    const where = { listingId: BigInt(id) };
+    const [results, total] = await Promise.all([
+      prisma.marketplaceEvent.findMany({
+        where,
+        orderBy: { ledgerSequence: 'asc' },
+        take: limit,
+        skip: offset,
+      }),
+      prisma.marketplaceEvent.count({ where }),
+    ]);
+    res.json({ events: serialize(results), total });
   } catch (err) {
     next(internalError('Failed to fetch listing history'));
   }
@@ -562,6 +581,152 @@ router.get('/artists/:address/metrics', cacheMiddleware(60), async (req: Request
     });
   } catch (err) {
     next(internalError('Failed to fetch artist metrics'));
+  }
+});
+
+// ── GET /keeper/status ────────────────────────────────────────────────────────
+//
+// Returns the keeper's current operational state:
+//   - whether it is running and in dry-run mode
+//   - aggregate counts by KeeperActionStatus
+//   - the most recent 20 actions (for quick operator triage)
+//   - stats from the last completed cycle
+
+router.get('/keeper/status', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // Lazy-import to avoid a hard dependency when the keeper is disabled.
+    const { getLastCycleStats, isKeeperRunning } = await import('../keeper/index.js');
+    const { getActionSummary, getRecentActions } = await import('../keeper/idempotency.js');
+
+    const [summary, recent, lastCycle] = await Promise.all([
+      getActionSummary(),
+      getRecentActions(20),
+      Promise.resolve(getLastCycleStats()),
+    ]);
+
+    const payload = {
+      running:       isKeeperRunning(),
+      dryRun:        process.env.KEEPER_DRY_RUN !== 'false',
+      enabled:       process.env.KEEPER_ENABLED === 'true',
+      actionCounts:  summary,
+      lastCycle: lastCycle
+        ? {
+            startedAt:            lastCycle.startedAt,
+            completedAt:          lastCycle.completedAt,
+            candidatesDiscovered: lastCycle.candidatesDiscovered,
+            actionsAttempted:     lastCycle.actionsAttempted,
+            actionsSucceeded:     lastCycle.actionsSucceeded,
+            actionsFailed:        lastCycle.actionsFailed,
+            actionsSkipped:       lastCycle.actionsSkipped,
+            feesSpentStroops:     lastCycle.feesSpentStroops.toString(),
+            budgetExhausted:      lastCycle.budgetExhausted,
+            dryRun:               lastCycle.dryRun,
+          }
+        : null,
+      recentActions: serialize(recent),
+    };
+
+    res.json(payload);
+  } catch (err) {
+    next(internalError('Failed to fetch keeper status'));
+  }
+});
+
+// ── GET /sync/gaps ────────────────────────────────────────────────────────────
+//
+// Returns ledger gaps with optional filtering by status/source.
+// Also includes a summary of open gaps and total missing ledgers.
+
+router.get('/sync/gaps', validateQuery(syncGapsQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { status, source, limit, offset } = (req as any).validatedQuery;
+  try {
+    const where: any = {};
+    if (status) where.status = status;
+    if (source) where.source = source;
+
+    const take = limit ?? 50;
+    const skip = offset ?? 0;
+
+    const [gaps, total, openSummary] = await Promise.all([
+      prisma.ledgerGap.findMany({
+        where,
+        orderBy: { createdAt: 'asc' },
+        take,
+        skip,
+        include: { repairJob: { select: { id: true, status: true, checkpointLedger: true, totalInserted: true } } },
+      }),
+      prisma.ledgerGap.count({ where }),
+      prisma.ledgerGap.findMany({
+        where: { status: 'Open' },
+        select: { fromLedger: true, toLedger: true },
+      }),
+    ]);
+
+    const openLedgers = openSummary.reduce(
+      (acc, g) => acc + (g.toLedger - g.fromLedger + 1), 0,
+    );
+
+    res.json({
+      summary: {
+        openGaps:    openSummary.length,
+        openLedgers,
+      },
+      total,
+      gaps: serialize(gaps),
+    });
+  } catch (err) {
+    next(internalError('Failed to fetch sync gaps'));
+  }
+});
+
+// ── GET /sync/gaps/:id ────────────────────────────────────────────────────────
+
+router.get('/sync/gaps/:id', async (req: Request, res: Response, next: NextFunction) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return next(badRequest('Gap ID must be an integer'));
+  try {
+    const gap = await prisma.ledgerGap.findUnique({
+      where: { id },
+      include: { repairJob: true },
+    });
+    if (!gap) return next(notFound('Gap not found'));
+    res.json(serialize(gap));
+  } catch (err) {
+    next(internalError('Failed to fetch gap'));
+  }
+});
+
+// ── GET /sync/jobs ────────────────────────────────────────────────────────────
+//
+// BackfillJob listing for operator visibility.
+
+router.get('/sync/jobs', async (req: Request, res: Response, next: NextFunction) => {
+  const status = req.query.status as string | undefined;
+  try {
+    const where: any = {};
+    if (status) where.status = status;
+    const jobs = await prisma.backfillJob.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+    res.json(serialize(jobs));
+  } catch (err) {
+    next(internalError('Failed to fetch backfill jobs'));
+  }
+});
+
+// ── GET /sync/jobs/:id ────────────────────────────────────────────────────────
+
+router.get('/sync/jobs/:id', async (req: Request, res: Response, next: NextFunction) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return next(badRequest('Job ID must be an integer'));
+  try {
+    const job = await prisma.backfillJob.findUnique({ where: { id } });
+    if (!job) return next(notFound('BackfillJob not found'));
+    res.json(serialize(job));
+  } catch (err) {
+    next(internalError('Failed to fetch backfill job'));
   }
 });
 

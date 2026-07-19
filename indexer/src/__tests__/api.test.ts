@@ -281,7 +281,7 @@ describe('GET /listings/:id/history', () => {
   it('[ISSUE-067] returns invalid ID format error', async () => {
     const res = await request(app).get('/listings/invalid/history');
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain('Invalid ID format');
+    expect(res.body.error.message).toContain('Invalid ID format');
   });
 });
 

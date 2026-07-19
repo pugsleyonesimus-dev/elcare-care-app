@@ -53,7 +53,12 @@ export const statsQuerySchema = z.object({
   to:    z.string().optional(),
 });
 
-// ── Middleware factory ────────────────────────────────────────────────────────
+export const syncGapsQuerySchema = z.object({
+  status: z.enum(['Open', 'Repairing', 'Repaired', 'Failed']).optional(),
+  source: z.enum(['rpc_window_skip', 'reorg', 'manual']).optional(),
+  limit:  positiveInt(500).optional(),
+  offset: positiveInt(10_000).optional(),
+});
 
 export function validateQuery<T extends z.ZodTypeAny>(schema: T) {
   return (req: Request, _res: Response, next: NextFunction) => {

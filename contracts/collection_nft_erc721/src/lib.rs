@@ -30,9 +30,9 @@ pub enum Error {
     MaxSupplyReached = 6,
     NotCreator = 7,
     InsufficientBalance = 8,
-    MetadataFrozen = 9,  // base_uri cannot be updated after freeze
-    AlreadyFrozen = 10,  // freeze_metadata called more than once
-    InvalidBps = 11,     // basis points exceed MAX_BPS (10_000)
+    MetadataFrozen = 9,    // base_uri cannot be updated after freeze
+    AlreadyFrozen = 10,    // freeze_metadata called more than once
+    InvalidBps = 11,       // basis points exceed MAX_BPS (10_000)
     CollectionPaused = 12, // minting is paused
 }
 
@@ -62,7 +62,7 @@ pub enum DataKey {
     // Per-token royalty overrides (persistent, optional)
     TokenRoyaltyReceiver(u64), // Address
     TokenRoyaltyBps(u64),      // u32
-    Paused,         // bool   — minting paused when true
+    Paused,                    // bool   — minting paused when true
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -143,7 +143,12 @@ impl NormalNFT721 {
         Self::extend_instance_ttl(&env);
         let creator = Self::only_creator(&env)?;
 
-        if env.storage().instance().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false) {
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::Paused)
+            .unwrap_or(false)
+        {
             return Err(Error::CollectionPaused);
         }
 
@@ -177,7 +182,12 @@ impl NormalNFT721 {
         Self::extend_instance_ttl(&env);
         let creator = Self::only_creator(&env)?;
 
-        if env.storage().instance().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false) {
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::Paused)
+            .unwrap_or(false)
+        {
             return Err(Error::CollectionPaused);
         }
 
@@ -642,9 +652,7 @@ impl NormalNFT721 {
         {
             return Err(Error::MetadataFrozen);
         }
-        env.storage()
-            .instance()
-            .set(&DataKey::BaseUri, &base_uri);
+        env.storage().instance().set(&DataKey::BaseUri, &base_uri);
         Ok(())
     }
 
