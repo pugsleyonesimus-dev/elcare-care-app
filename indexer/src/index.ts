@@ -79,29 +79,28 @@ app.get('/readyz', async (req: express.Request, res: express.Response) => {
     if (isStalled()) {
         return res.status(503).json({ status: 'stalled', reason: 'Indexer not advancing' });
     }
-    const state = await prisma.syncState.findUnique({ where: { id: 1 } });
-    if (state && state.lastLedger > 0) {
-        res.json({ status: 'ready', lastLedger: state.lastLedger });
-    } else {
-        res.status(503).json({ status: 'not_ready', reason: 'No ledgers indexed yet' });
-    }
 
-    // Check first ledger indexed
     try {
-        const state = await prisma.syncState.findUnique({ where: { id: 1 } });
-        if (!state || state.lastLedger === 0) {
-            reasons.push('No ledgers indexed yet');
+        const contracts = await prisma.trackedContract.findMany({
+            where: { active: true },
+            select: { contractId: true, lastLedger: true, label: true },
+        });
+        const ready = contracts.length > 0 && contracts.some((c) => c.lastLedger > 0);
+        if (ready) {
+            return res.json({
+                status: 'ready',
+                contracts: contracts.map((c) => ({ contractId: c.contractId, label: c.label, lastLedger: c.lastLedger })),
+            });
         }
-    } catch (err) {
-        reasons.push('Failed to check sync state');
+        return res.status(503).json({ status: 'not_ready', reason: 'No ledgers indexed yet' });
+    } catch {
+        // Fall back to legacy SyncState check
+        const state = await prisma.syncState.findUnique({ where: { id: 1 } });
+        if (state && state.lastLedger > 0) {
+            return res.json({ status: 'ready', lastLedger: state.lastLedger });
+        }
+        return res.status(503).json({ status: 'not_ready', reason: 'No ledgers indexed yet' });
     }
-
-    if (reasons.length > 0) {
-        return res.status(503).json({ status: 'not_ready', reasons });
-    }
-
-    const state = await prisma.syncState.findUnique({ where: { id: 1 } });
-    res.json({ status: 'ready', lastLedger: state?.lastLedger });
 });
 
 // Start the server

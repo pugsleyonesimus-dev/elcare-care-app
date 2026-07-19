@@ -730,4 +730,81 @@ router.get('/sync/jobs/:id', async (req: Request, res: Response, next: NextFunct
   }
 });
 
+// ── GET /admin/contracts ──────────────────────────────────────────────────────
+//
+// List all tracked contracts with their current sync status.
+
+router.get('/admin/contracts', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const contracts = await prisma.trackedContract.findMany({
+      orderBy: { createdAt: 'asc' },
+    });
+    res.json(serialize(contracts));
+  } catch (err) {
+    next(internalError('Failed to fetch tracked contracts'));
+  }
+});
+
+// ── POST /admin/contracts ─────────────────────────────────────────────────────
+//
+// Add a new contract to track. Body: { contractId, type, label?, startLedger? }
+
+router.post('/admin/contracts', async (req: Request, res: Response, next: NextFunction) => {
+  const { contractId, type, label = '', startLedger = 0 } = req.body ?? {};
+
+  if (!contractId || typeof contractId !== 'string' || contractId.trim() === '') {
+    return next(badRequest('contractId is required'));
+  }
+  if (type !== 'marketplace' && type !== 'launchpad') {
+    return next(badRequest('type must be "marketplace" or "launchpad"'));
+  }
+  if (!Number.isInteger(startLedger) || startLedger < 0) {
+    return next(badRequest('startLedger must be a non-negative integer'));
+  }
+
+  try {
+    const contract = await prisma.trackedContract.upsert({
+      where: { contractId: contractId.trim() },
+      create: {
+        contractId: contractId.trim(),
+        type,
+        label: String(label),
+        startLedger,
+        lastLedger: startLedger,
+        active: true,
+      },
+      update: {
+        type,
+        label: String(label),
+        active: true,
+      },
+    });
+    res.status(201).json(serialize(contract));
+  } catch (err) {
+    next(internalError('Failed to add tracked contract'));
+  }
+});
+
+// ── DELETE /admin/contracts/:id ───────────────────────────────────────────────
+//
+// Deactivate a tracked contract. The polling loop will stop on the next tick.
+
+router.delete('/admin/contracts/:id', async (req: Request, res: Response, next: NextFunction) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return next(badRequest('Contract ID must be an integer'));
+
+  try {
+    const existing = await prisma.trackedContract.findUnique({ where: { id } });
+    if (!existing) return next(notFound('Tracked contract not found'));
+
+    const updated = await prisma.trackedContract.update({
+      where: { id },
+      data: { active: false },
+    });
+    res.json(serialize(updated));
+  } catch (err) {
+    next(internalError('Failed to deactivate tracked contract'));
+  }
+});
+
 export default router;
