@@ -5,11 +5,15 @@ import dotenv from 'dotenv';
 import {
   latestLedgerProcessedGauge,
   networkLatestLedgerGauge,
-  syncLatencyGauge
+  syncLatencyGauge,
+  gapsCreatedTotal,
+  openGapsGauge,
+  openGapLedgersTotalGauge,
 } from './metrics.js';
 import { recordProgress } from './stall.js';
 import { collectMarketplaceEvents, MAX_LEDGER_WINDOW } from './event-sync.js';
 import { withRetry } from './retry.js';
+import { logger } from './logger.js';
 import redis from './redis.js';
 import { loadConfig } from './config.js';
 
@@ -20,6 +24,55 @@ const CONTRACT_ID = process.env.MARKETPLACE_CONTRACT_ID || '';
 const LAUNCHPAD_CONTRACT_ID = process.env.LAUNCHPAD_CONTRACT_ID || '';
 
 export const MAX_REORG_DEPTH = 100;
+
+// ── LedgerGap persistence ─────────────────────────────────────────────────────
+
+export type LedgerGapSource = 'rpc_window_skip' | 'reorg' | 'manual';
+
+/**
+ * Upsert a LedgerGap row for a skipped ledger range.
+ *
+ * Uses a unique index on (fromLedger, toLedger, source) so repeated calls for
+ * the same range are idempotent — the poller may re-enter the same code path
+ * after a restart before the gap is repaired.
+ *
+ * Also refreshes the open-gap gauge so Prometheus always reflects current state.
+ */
+export async function persistLedgerGap(
+  from: number,
+  to: number,
+  source: LedgerGapSource,
+): Promise<void> {
+  try {
+    await prisma.ledgerGap.upsert({
+      where: {
+        fromLedger_toLedger_source: { fromLedger: from, toLedger: to, source },
+      },
+      create: { fromLedger: from, toLedger: to, source, status: 'Open' },
+      update: {}, // already exists — leave status/error untouched
+    });
+
+    gapsCreatedTotal.inc({ source });
+
+    // Refresh open-gap gauges asynchronously (best-effort, non-blocking)
+    prisma.ledgerGap
+      .findMany({ where: { status: 'Open' }, select: { fromLedger: true, toLedger: true } })
+      .then((gaps) => {
+        openGapsGauge.set(gaps.length);
+        const total = gaps.reduce((acc, g) => acc + (g.toLedger - g.fromLedger + 1), 0);
+        openGapLedgersTotalGauge.set(total);
+      })
+      .catch(() => {/* non-fatal */});
+
+    logger.info('poller: persisted ledger gap', { from, to, source });
+  } catch (err) {
+    // Non-fatal: gap persistence must never crash the poller
+    logger.error('poller: failed to persist ledger gap', {
+      from, to, source,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 // Retry back-off base in ms; doubles on each consecutive failure up to MAX_BACKOFF_MS.
 const BASE_BACKOFF_MS = 2_000;
@@ -233,6 +286,8 @@ export async function startPolling() {
           indexedLedger: syncState.lastLedger,
           networkLatestLedger,
         });
+        // Persist the gap caused by the reorg before reverting
+        await persistLedgerGap(networkLatestLedger + 1, syncState.lastLedger, 'reorg');
         await revertLedgers(networkLatestLedger);
         continue;
       }
@@ -255,6 +310,9 @@ export async function startPolling() {
         });
 
         syncState = resetState;
+
+        // Persist gap so the repair worker can back-fill the skipped range.
+        await persistLedgerGap(skippedRange.from, skippedRange.to, 'rpc_window_skip');
       }
       // Cap how many ledgers we process per cycle to bound catch-up batch size.
       const batchEndLedger = Math.min(networkLatestLedger, startLedger + config.maxLedgersPerCycle - 1);
@@ -348,42 +406,43 @@ async function fetchAuctionFromChain(_auctionId: bigint): Promise<any | null> {
 }
 
 export async function applyDecodedEvents(decodedEvents: any[], tx: any) {
-  const conditions = decodedEvents.map((event) => ({
-    listingId: event.listingId ?? null,
-    eventType: event.eventType,
-    ledgerSequence: event.ledgerSequence,
-  }));
+  if (decodedEvents.length === 0) return [];
 
-  const existing = conditions.length
-    ? await tx.marketplaceEvent.findMany({
-        where: { OR: conditions },
-        select: { listingId: true, eventType: true, ledgerSequence: true },
-      })
-    : [];
+  const toInsert: any[] = [];
 
-  const existingSet = new Set(
-    existing.map((event: any) => `${event.listingId ?? 'null'}|${event.eventType}|${event.ledgerSequence}`)
-  );
+  for (const event of decodedEvents) {
+    const eventHash: string = event.eventHash ?? '';
 
-  const toInsert = decodedEvents.filter(
-    (event: any) => !existingSet.has(`${event.listingId ?? 'null'}|${event.eventType}|${event.ledgerSequence}`)
-  );
+    // Upsert on eventHash — the unique identity of this on-chain event.
+    // On conflict (duplicate) the update is a no-op; we detect it by checking
+    // whether the row's id changed (Prisma returns the upserted row).
+    const existing = eventHash
+      ? await tx.marketplaceEvent.findUnique({ where: { eventHash }, select: { id: true } })
+      : null;
 
-  if (toInsert.length > 0) {
-    await tx.marketplaceEvent.createMany({
-      data: toInsert.map((event) => ({
-        listingId: event.listingId,
+    if (existing) {
+      duplicateEventsCounter.inc();
+      logger.debug('[Dedup] Skipping duplicate event', {
+        eventHash,
+        eventType: event.eventType,
+        ledger: event.ledgerSequence,
+      });
+      continue;
+    }
+
+    await tx.marketplaceEvent.create({
+      data: {
+        listingId: event.listingId ?? null,
         eventType: event.eventType,
         actor: event.actor,
         data: event.data,
         ledgerSequence: event.ledgerSequence,
-      })),
-      skipDuplicates: true,
+        eventHash,
+      },
     });
 
-    for (const event of toInsert) {
-      await processEvent(event, tx, true);
-    }
+    toInsert.push(event);
+    await processEvent(event, tx, true);
   }
 
   return toInsert;
@@ -402,6 +461,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
         actor,
         ledgerSequence,
         data,
+        eventHash: event.eventHash ?? '',
       },
     });
   }

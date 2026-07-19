@@ -799,9 +799,7 @@ impl LazyMint721 {
     pub fn set_public_phase(env: Env) -> Result<(), Error> {
         Self::extend_instance_ttl(&env);
         Self::only_creator(&env)?;
-        env.storage()
-            .instance()
-            .set(&DataKey::IsPublicPhase, &true);
+        env.storage().instance().set(&DataKey::IsPublicPhase, &true);
         Ok(())
     }
 

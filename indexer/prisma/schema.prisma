@@ -116,6 +116,7 @@ model MarketplaceEvent {
   data            Json
   ledgerSequence  Int
   ledgerTimestamp DateTime @default(now())
+  eventHash       String   @unique @default("")  // SHA256(contractId:ledger:txHash:eventIndex)
   @@index([actor])
   @@index([eventType])
   @@index([listingId])
@@ -134,4 +135,121 @@ model Collection {
   deployedAtLedger Int
   createdAt       DateTime @default(now())
   @@index([creator])
+}
+
+// ── Backfill subsystem ───────────────────────────────────────────────────────
+//
+// BackfillJob tracks a single bounded historical scan.  Progress is
+// check-pointed per batch so a crash can resume from checkpointLedger.
+//
+// Lifecycle:
+//   Pending → Running → Completed
+//                     → Failed  (retryable via --resume=<id>)
+//   Cancelled         (operator-cancelled before or during run)
+//
+// advisoryLock: Postgres pg_try_advisory_lock(id) key stored here so two
+//               workers cannot claim the same job concurrently.
+
+enum BackfillJobStatus {
+  Pending
+  Running
+  Completed
+  Failed
+  Cancelled
+}
+
+enum LedgerGapSource {
+  rpc_window_skip   // poller advanced past the RPC retention window
+  reorg             // chain reorg caused a gap
+  manual            // operator-created gap for re-processing
+}
+
+enum LedgerGapStatus {
+  Open       // discovered, not yet repaired
+  Repairing  // a BackfillJob is actively working this gap
+  Repaired   // fully covered
+  Failed     // repair exhausted retries
+}
+
+model BackfillJob {
+  id                Int               @id @default(autoincrement())
+  startLedger       Int
+  endLedger         Int
+  checkpointLedger  Int               @default(0)  // last batch end written to DB
+  status            BackfillJobStatus @default(Pending)
+  rpcUrl            String
+  error             String?
+  totalInserted     Int               @default(0)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  // A job may be created to repair a specific gap
+  gap               LedgerGap?        @relation(fields: [gapId], references: [id])
+  gapId             Int?
+
+  @@index([status])
+  @@index([startLedger, endLedger])
+  @@index([gapId])
+}
+
+model LedgerGap {
+  id          Int             @id @default(autoincrement())
+  fromLedger  Int
+  toLedger    Int
+  source      LedgerGapSource
+  status      LedgerGapStatus @default(Open)
+  error       String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  // The repair job assigned to cover this gap (null until repair starts)
+  repairJob   BackfillJob[]
+
+  @@index([status])
+  @@index([fromLedger, toLedger])
+  @@unique([fromLedger, toLedger, source])  // prevent duplicate gap rows
+}
+
+// ── Keeper subsystem ──────────────────────────────────────────────────────────
+//
+// Records every maintenance action the keeper attempts so that restarts never
+// double-submit a pending on-chain transaction.  The lifecycle is:
+//   Pending → Submitted → Succeeded
+//                       → Failed (retryable)
+//                       → Skipped (permanent — e.g. ListingNotExpired contract revert)
+//
+// targetType: "ExpireListing" | "FinalizeAuction" | "ReclaimOffer"
+// targetId  : the listing_id / auction_id / offer_id (BigInt for parity with the
+//             other models)
+
+enum KeeperActionStatus {
+  Pending    // Discovered but not yet submitted
+  Submitted  // Transaction sent; polling for result
+  Succeeded  // getTransaction confirmed success
+  Failed     // All retries exhausted; lastError is set
+  Skipped    // Permanent contract-level rejection (no resubmission)
+}
+
+enum KeeperTargetType {
+  ExpireListing
+  FinalizeAuction
+  ReclaimOffer
+}
+
+model KeeperAction {
+  id          Int                 @id @default(autoincrement())
+  targetType  KeeperTargetType
+  targetId    BigInt
+  txHash      String?
+  status      KeeperActionStatus  @default(Pending)
+  attempts    Int                 @default(0)
+  lastError   String?
+  feePaid     BigInt?             // in stroops; set on Succeeded
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@unique([targetType, targetId])   // idempotency: one live record per target
+  @@index([status])
+  @@index([targetType, status])
+  @@index([updatedAt])
 }

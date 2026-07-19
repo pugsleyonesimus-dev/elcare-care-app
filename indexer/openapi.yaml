@@ -366,6 +366,105 @@ paths:
                     items:
                       type: string
 
+  /sync/gaps:
+    get:
+      summary: List ledger gaps
+      description: Returns gaps in ledger coverage with optional status/source filters. Use this to monitor missing event windows and track repair progress.
+      tags: [Sync]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [Open, Repairing, Repaired, Failed]
+          description: Filter by gap status
+        - name: source
+          in: query
+          schema:
+            type: string
+            enum: [rpc_window_skip, reorg, manual]
+          description: Filter by gap source
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            maximum: 500
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Gap list with open-gap summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncGapsResponse'
+        '400':
+          description: Invalid query parameter
+
+  /sync/gaps/{id}:
+    get:
+      summary: Get a single ledger gap
+      tags: [Sync]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Gap details including repair job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerGap'
+        '404':
+          description: Gap not found
+
+  /sync/jobs:
+    get:
+      summary: List backfill jobs
+      tags: [Sync]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [Pending, Running, Completed, Failed, Cancelled]
+      responses:
+        '200':
+          description: List of backfill jobs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BackfillJob'
+
+  /sync/jobs/{id}:
+    get:
+      summary: Get a single backfill job
+      tags: [Sync]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: BackfillJob detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackfillJob'
+        '404':
+          description: Job not found
+
   /metrics:
     get:
       summary: Prometheus metrics
@@ -485,6 +584,86 @@ components:
           type: integer
         lastPayout:
           type: integer
+
+    LedgerGap:
+      type: object
+      properties:
+        id:
+          type: integer
+        fromLedger:
+          type: integer
+        toLedger:
+          type: integer
+        source:
+          type: string
+          enum: [rpc_window_skip, reorg, manual]
+        status:
+          type: string
+          enum: [Open, Repairing, Repaired, Failed]
+        error:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        repairJob:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackfillJob'
+
+    BackfillJob:
+      type: object
+      properties:
+        id:
+          type: integer
+        startLedger:
+          type: integer
+        endLedger:
+          type: integer
+        checkpointLedger:
+          type: integer
+        status:
+          type: string
+          enum: [Pending, Running, Completed, Failed, Cancelled]
+        rpcUrl:
+          type: string
+        error:
+          type: string
+          nullable: true
+        totalInserted:
+          type: integer
+        gapId:
+          type: integer
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    SyncGapsResponse:
+      type: object
+      properties:
+        summary:
+          type: object
+          properties:
+            openGaps:
+              type: integer
+              description: Number of gaps currently in Open status
+            openLedgers:
+              type: integer
+              description: Total ledgers covered by all Open gaps
+        total:
+          type: integer
+          description: Total gaps matching the query filters
+        gaps:
+          type: array
+          items:
+            $ref: '#/components/schemas/LedgerGap'
 
     Stats:
       type: object

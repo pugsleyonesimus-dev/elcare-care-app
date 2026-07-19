@@ -723,11 +723,27 @@ fn replay_check_before_sig_verification() {
             .persistent()
             .set(&DataKey::RedeemedVoucher(nonce), &true);
     });
-    let buyer = Address::generate(&env);
-    let v = make_voucher(&env, token_id, nonce);
-    let any_sig = BytesN::from_array(&env, &[99u8; 64]);
-    let res = client.try_redeem(&buyer, &v, &1u128, &any_sig, &empty_proof(&env));
-    assert_eq!(res, Err(Ok(Error::VoucherAlreadyRedeemed)));
+
+    // Burn should succeed and write supply = 0, not amount (3).
+    client.burn(&buyer, &buyer, &token_id, &3u128);
+
+    // total_supply must be 0, not 3 (the old unwrap_or(amount) result).
+    assert_eq!(client.total_supply(&token_id), 0u128);
+}
+
+// ─── Issue #39 — Voucher nonce / replay protection tests ─────────────────────
+
+fn make_voucher_1155_with_nonce(env: &Env, token_id: u64, nonce: u64) -> MintVoucher1155 {
+    MintVoucher1155 {
+        token_id,
+        nonce,
+        buyer_quota: 100u128,
+        price_per_unit: 0i128,
+        currency: Address::generate(env),
+        uri: String::from_str(env, "ipfs://test"),
+        uri_hash: BytesN::from_array(env, &[0u8; 32]),
+        valid_until: 0,
+    }
 }
 
 #[test]

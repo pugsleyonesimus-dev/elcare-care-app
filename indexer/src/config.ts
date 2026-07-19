@@ -1,3 +1,7 @@
+import { z } from 'zod';
+
+// ── Generic helpers ──────────────────────────────────────────────────────────
+
 function parsePositiveInt(name: string, raw: string | undefined, defaultVal: number): number {
   if (raw === undefined || raw === '') return defaultVal;
   const n = Number(raw);
@@ -6,6 +10,8 @@ function parsePositiveInt(name: string, raw: string | undefined, defaultVal: num
   }
   return n;
 }
+
+// ── Required env-var list (non-keeper) ──────────────────────────────────────
 
 const REQUIRED_ENV_VARS = [
   'DATABASE_URL',
@@ -39,3 +45,122 @@ export function loadConfig() {
 }
 
 export type Config = ReturnType<typeof loadConfig>;
+
+// ── Keeper configuration ─────────────────────────────────────────────────────
+//
+// All keeper env vars are optional at process start so that the main indexer
+// can boot without them.  loadKeeperConfig() throws at keeper-startup time if
+// KEEPER_ENABLED=true but required vars are missing.
+
+/** Zod schema for the raw env vars consumed by the keeper. */
+const keeperEnvSchema = z.object({
+  // Whether the keeper loop should run at all (default: false → dry-run safe).
+  KEEPER_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+
+  // Stellar secret key for the keeper account (required when KEEPER_ENABLED=true).
+  KEEPER_SECRET: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v.startsWith('S'), {
+      message: 'KEEPER_SECRET must be a Stellar secret key starting with "S"',
+    }),
+
+  // Whether to simulate only and never broadcast (default: true — safe default).
+  KEEPER_DRY_RUN: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false'),   // anything other than explicit "false" = dry-run
+
+  // How often to run the keeper sweep cycle (milliseconds).
+  KEEPER_INTERVAL_MS: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Number(v) : 60_000))
+    .pipe(z.number().int().positive()),
+
+  // Maximum number of actions the keeper will attempt in a single cycle.
+  KEEPER_MAX_ACTIONS_PER_CYCLE: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Number(v) : 20))
+    .pipe(z.number().int().positive()),
+
+  // Maximum fee in stroops allowed for a single transaction.
+  KEEPER_MAX_FEE_STROOPS: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Number(v) : 1_000_000))   // ~0.1 XLM
+    .pipe(z.number().int().positive()),
+
+  // Daily fee budget in stroops; keeper halts cycle when exhausted.
+  KEEPER_DAILY_FEE_BUDGET_STROOPS: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Number(v) : 10_000_000))  // ~1 XLM / day
+    .pipe(z.number().int().positive()),
+
+  // Fee-bump multiplier applied on each escalation step (e.g. 1.5 = +50%).
+  KEEPER_FEE_BUMP_MULTIPLIER: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Number(v) : 1.5))
+    .pipe(z.number().min(1.01).max(10)),
+
+  // Maximum number of fee-bump retries before marking action Failed.
+  KEEPER_FEE_BUMP_MAX_RETRIES: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Number(v) : 3))
+    .pipe(z.number().int().min(0).max(10)),
+
+  // How long to wait for a submitted tx to appear before triggering a fee-bump (ms).
+  KEEPER_SUBMIT_TIMEOUT_MS: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Number(v) : 30_000))
+    .pipe(z.number().int().positive()),
+
+  // How long to poll getTransaction after submit before giving up (ms).
+  KEEPER_POLL_TIMEOUT_MS: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Number(v) : 60_000))
+    .pipe(z.number().int().positive()),
+
+  // Interval between getTransaction polls (ms).
+  KEEPER_POLL_INTERVAL_MS: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Number(v) : 2_000))
+    .pipe(z.number().int().positive()),
+});
+
+export type KeeperConfig = z.infer<typeof keeperEnvSchema>;
+
+/**
+ * Parse and validate all keeper-related environment variables.
+ *
+ * Throws a descriptive ZodError if any value fails validation.
+ * Also throws if KEEPER_ENABLED=true but KEEPER_SECRET is missing.
+ */
+export function loadKeeperConfig(): KeeperConfig {
+  const result = keeperEnvSchema.safeParse(process.env);
+  if (!result.success) {
+    const messages = result.error.errors.map((e) => `  ${e.path.join('.')}: ${e.message}`).join('\n');
+    throw new Error(`[keeper] Invalid configuration:\n${messages}`);
+  }
+
+  const cfg = result.data;
+
+  if (cfg.KEEPER_ENABLED && !cfg.KEEPER_SECRET) {
+    throw new Error(
+      '[keeper] KEEPER_ENABLED=true requires KEEPER_SECRET to be set.\n' +
+        'Generate a funded Stellar keypair and export its secret as KEEPER_SECRET.'
+    );
+  }
+
+  return cfg;
+}

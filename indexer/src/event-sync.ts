@@ -10,6 +10,9 @@ type RpcEvent = {
   topic: unknown[];
   value: unknown;
   ledger: number;
+  contractId?: string;
+  txHash?: string;
+  id?: string; // Stellar event ID encodes position info
 };
 
 function toBase64(value: unknown): string {
@@ -25,9 +28,32 @@ function toBase64(value: unknown): string {
   return String(value);
 }
 
-function decodeRpcEvent(event: RpcEvent): DecodedEvent | null {
+/**
+ * Extracts a stable event index from the Stellar event ID.
+ * Stellar event IDs are formatted as "<ledger>-<txIndex>-<eventIndex>" or similar.
+ * We use the last numeric segment as the index within the ledger.
+ */
+function extractEventIndex(event: RpcEvent, fallback: number): number {
+  if (typeof event.id === 'string') {
+    const parts = event.id.split('-');
+    const last = parseInt(parts[parts.length - 1], 10);
+    if (!isNaN(last)) return last;
+  }
+  return fallback;
+}
+
+function decodeRpcEvent(event: RpcEvent, eventIndex: number): DecodedEvent | null {
   const topicStrings = event.topic.map((topic) => toBase64(topic));
-  return parseMarketplaceEvent(topicStrings, toBase64(event.value), event.ledger);
+  const contractId = event.contractId ?? '';
+  const txHash = event.txHash ?? '';
+  return parseMarketplaceEvent(
+    topicStrings,
+    toBase64(event.value),
+    event.ledger,
+    contractId,
+    txHash,
+    extractEventIndex(event, eventIndex)
+  );
 }
 
 export async function collectMarketplaceEvents(
@@ -60,7 +86,7 @@ export async function collectMarketplaceEvents(
 
       for (const [idx, event] of (response.events ?? []).entries()) {
         try {
-          const decoded = decodeRpcEvent(event);
+          const decoded = decodeRpcEvent(event, idx);
           if (decoded) decodedEvents.push(decoded);
         } catch (err) {
           decodeErrorsCounter.inc();
