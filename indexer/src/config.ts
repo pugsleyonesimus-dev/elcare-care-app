@@ -11,15 +11,99 @@ function parsePositiveInt(name: string, raw: string | undefined, defaultVal: num
   return n;
 }
 
+// ── TrackedContract definition ───────────────────────────────────────────────
+
+export interface TrackedContractConfig {
+  id: string;
+  type: 'marketplace' | 'launchpad';
+  label: string;
+  startLedger: number;
+}
+
+const trackedContractSchema = z.object({
+  id: z.string().min(1),
+  type: z.enum(['marketplace', 'launchpad']),
+  label: z.string().default(''),
+  startLedger: z.number().int().min(0).default(0),
+});
+
+/**
+ * Parses the TRACKED_CONTRACTS environment variable.
+ *
+ * TRACKED_CONTRACTS should be a JSON array:
+ *   [{"id":"C...","type":"marketplace","label":"mainnet","startLedger":1000000}]
+ *
+ * Falls back to the legacy single-contract MARKETPLACE_CONTRACT_ID /
+ * LAUNCHPAD_CONTRACT_ID variables so existing deployments keep working
+ * without any config changes.
+ */
+export function parseTrackedContracts(): TrackedContractConfig[] {
+  const raw = process.env.TRACKED_CONTRACTS;
+
+  if (raw && raw.trim() !== '') {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(
+        '[indexer] TRACKED_CONTRACTS is not valid JSON. ' +
+          'Expected a JSON array: [{"id":"C...","type":"marketplace","label":"...","startLedger":0}]'
+      );
+    }
+
+    if (!Array.isArray(parsed)) {
+      throw new Error('[indexer] TRACKED_CONTRACTS must be a JSON array.');
+    }
+
+    const contracts: TrackedContractConfig[] = [];
+    for (const [i, item] of parsed.entries()) {
+      const result = trackedContractSchema.safeParse(item);
+      if (!result.success) {
+        const msgs = result.error.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ');
+        throw new Error(`[indexer] TRACKED_CONTRACTS[${i}] is invalid: ${msgs}`);
+      }
+      contracts.push(result.data as TrackedContractConfig);
+    }
+
+    if (contracts.length === 0) {
+      throw new Error('[indexer] TRACKED_CONTRACTS must contain at least one entry.');
+    }
+
+    return contracts;
+  }
+
+  // ── Legacy fallback ────────────────────────────────────────────────────────
+  const contracts: TrackedContractConfig[] = [];
+  if (process.env.MARKETPLACE_CONTRACT_ID) {
+    contracts.push({
+      id: process.env.MARKETPLACE_CONTRACT_ID,
+      type: 'marketplace',
+      label: 'marketplace',
+      startLedger: 0,
+    });
+  }
+  if (process.env.LAUNCHPAD_CONTRACT_ID) {
+    contracts.push({
+      id: process.env.LAUNCHPAD_CONTRACT_ID,
+      type: 'launchpad',
+      label: 'launchpad',
+      startLedger: 0,
+    });
+  }
+  return contracts;
+}
+
 // ── Required env-var list (non-keeper) ──────────────────────────────────────
 
 const REQUIRED_ENV_VARS = [
   'DATABASE_URL',
-  'MARKETPLACE_CONTRACT_ID',
   'REDIS_URL',
   'STELLAR_RPC_URL',
   'STELLAR_NETWORK',
 ] as const;
+
+// At least one of TRACKED_CONTRACTS or MARKETPLACE_CONTRACT_ID must be set.
+const CONTRACT_ENV_VARS = ['TRACKED_CONTRACTS', 'MARKETPLACE_CONTRACT_ID'] as const;
 
 /**
  * Validates that all required environment variables are present.
@@ -29,6 +113,13 @@ const REQUIRED_ENV_VARS = [
  */
 export function validateRequiredEnv(): void {
   const missing = REQUIRED_ENV_VARS.filter((name) => !process.env[name]);
+
+  // Must have either TRACKED_CONTRACTS or legacy MARKETPLACE_CONTRACT_ID
+  const hasContractConfig = CONTRACT_ENV_VARS.some((name) => process.env[name]);
+  if (!hasContractConfig) {
+    missing.push('MARKETPLACE_CONTRACT_ID (or TRACKED_CONTRACTS)' as any);
+  }
+
   if (missing.length > 0) {
     throw new Error(
       `[indexer] Missing required environment variables: ${missing.join(', ')}.\n` +

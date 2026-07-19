@@ -9,23 +9,20 @@ import {
   gapsCreatedTotal,
   openGapsGauge,
   openGapLedgersTotalGauge,
+  duplicateEventsCounter,
 } from './metrics.js';
 import { recordProgress } from './stall.js';
 import { collectMarketplaceEvents, MAX_LEDGER_WINDOW } from './event-sync.js';
 import { withRetry } from './retry.js';
 import { logger } from './logger.js';
 import redis from './redis.js';
-import { loadConfig } from './config.js';
+import { loadConfig, parseTrackedContracts } from './config.js';
 
 dotenv.config();
 
-const RPC_URL = process.env.STELLAR_RPC_URL || 'https://soroban-testnet.stellar.org';
-const CONTRACT_ID = process.env.MARKETPLACE_CONTRACT_ID || '';
-const LAUNCHPAD_CONTRACT_ID = process.env.LAUNCHPAD_CONTRACT_ID || '';
-
 export const MAX_REORG_DEPTH = 100;
 
-// ── LedgerGap persistence ─────────────────────────────────────────────────────
+const RPC_URL = process.env.STELLAR_RPC_URL || 'https://soroban-testnet.stellar.org';
 
 export type LedgerGapSource = 'rpc_window_skip' | 'reorg' | 'manual';
 
@@ -91,7 +88,7 @@ export function registerShutdownHook(fn: () => Promise<void>): void {
 }
 
 function getContractIds(): string[] {
-  return [CONTRACT_ID, LAUNCHPAD_CONTRACT_ID].filter(Boolean);
+  return parseTrackedContracts().map((c) => c.id).filter(Boolean);
 }
 
 function updateSyncMetrics(processedLedger: number, networkLatestLedger: number) {
@@ -247,155 +244,245 @@ export async function validateHashContinuity(
   return true;
 }
 
-export async function startPolling() {
-  const config = loadConfig(); // Validates at startup; throws on invalid env values
-  const contractIds = getContractIds();
-  if (contractIds.length === 0) {
-    throw new Error('At least one of MARKETPLACE_CONTRACT_ID or LAUNCHPAD_CONTRACT_ID must be set');
+/**
+ * Seed TrackedContract rows from TRACKED_CONTRACTS (or legacy env vars) into
+ * the database. Uses upsert on contractId so re-runs are idempotent.
+ * Returns the full list of active contracts from the DB after seeding.
+ */
+export async function seedTrackedContracts() {
+  const fromEnv = parseTrackedContracts();
+  for (const c of fromEnv) {
+    await prisma.trackedContract.upsert({
+      where: { contractId: c.id },
+      create: {
+        contractId: c.id,
+        type: c.type,
+        label: c.label,
+        startLedger: c.startLedger,
+        lastLedger: c.startLedger,
+        active: true,
+      },
+      // Only update label/type — don't reset lastLedger for existing contracts
+      update: { label: c.label, type: c.type, active: true },
+    });
   }
+  return prisma.trackedContract.findMany({ where: { active: true } });
+}
 
-  console.log(`Starting indexer poller for contract(s): ${contractIds.join(', ')} (pollIntervalMs=${config.pollIntervalMs}, maxLedgersPerCycle=${config.maxLedgersPerCycle})`);
+/**
+ * Poll a single tracked contract indefinitely.
+ * Each contract maintains its own lastLedger / lastLedgerHash in TrackedContract.
+ */
+async function pollContract(
+  contractRow: { id: number; contractId: string; lastLedger: number; lastLedgerHash: string | null },
+  config: ReturnType<typeof loadConfig>
+): Promise<void> {
+  let localErrors = 0;
 
   while (!shuttingDown) {
     try {
-      // 1. Get last indexed ledger — upsert avoids a unique-constraint violation
-      //    when two instances start simultaneously (race between findUnique + create).
-      let syncState = await prisma.syncState.upsert({
-        where: { id: 1 },
-        create: { id: 1, lastLedger: 0, lastLedgerHash: null },
-        update: {},
+      const contract = await prisma.trackedContract.findUnique({
+        where: { id: contractRow.id },
       });
 
-      // 2. Validate hash continuity on every poll
-      const isContinuous = await validateHashContinuity(syncState, server);
-      if (!isContinuous) {
-        continue; // Restart the loop immediately with the reverted state
+      if (!contract || !contract.active) {
+        logger.info('pollContract: contract deactivated, stopping loop', {
+          contractId: contractRow.contractId,
+        });
+        return;
       }
 
-      // 3. Resolve start ledger, clamping to the safe RPC window on every poll
-      let networkLatestLedger: number;
-      networkLatestLedger = await withRetry(
+      // Hash continuity check for this contract
+      if (contract.lastLedger > 0 && contract.lastLedgerHash) {
+        try {
+          const ledgersRes = await server.getLedgers({
+            startLedger: contract.lastLedger,
+            pagination: { limit: 1 },
+          });
+          if (ledgersRes.ledgers && ledgersRes.ledgers.length > 0) {
+            const networkHash = ledgersRes.ledgers[0].hash;
+            if (networkHash !== contract.lastLedgerHash) {
+              logger.warn('pollContract: reorg detected', {
+                contractId: contract.contractId,
+                ledger: contract.lastLedger,
+              });
+              const safeLedger = await findReorgSafePoint(contract.lastLedger, server);
+              await revertLedgers(safeLedger);
+              await prisma.trackedContract.update({
+                where: { id: contract.id },
+                data: { lastLedger: safeLedger, lastLedgerHash: null },
+              });
+              continue;
+            }
+          }
+        } catch (err) {
+          logger.error('pollContract: hash check failed', {
+            contractId: contract.contractId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      const networkLatestLedger: number = await withRetry(
         () => server.getLatestLedger().then((r) => r.sequence),
         { operation: 'getLatestLedger', maxAttempts: 5, baseDelayMs: 1_000 }
       );
 
       networkLatestLedgerGauge.set(networkLatestLedger);
 
-      if (syncState.lastLedger > 0 && networkLatestLedger < syncState.lastLedger) {
-        logger.warn('Network latest ledger moved behind indexed state', {
-          indexedLedger: syncState.lastLedger,
-          networkLatestLedger,
-        });
-        // Persist the gap caused by the reorg before reverting
-        await persistLedgerGap(networkLatestLedger + 1, syncState.lastLedger, 'reorg');
+      if (contract.lastLedger > 0 && networkLatestLedger < contract.lastLedger) {
+        await persistLedgerGap(networkLatestLedger + 1, contract.lastLedger, 'reorg');
         await revertLedgers(networkLatestLedger);
+        await prisma.trackedContract.update({
+          where: { id: contract.id },
+          data: { lastLedger: networkLatestLedger, lastLedgerHash: null },
+        });
         continue;
       }
 
       const windowFloor = networkLatestLedger - MAX_LEDGER_WINDOW;
-      let startLedger = syncState.lastLedger + 1;
-      let skippedRange: { from: number; to: number } | null = null;
+      let startLedger = contract.lastLedger + 1;
+
       if (startLedger < windowFloor) {
-        skippedRange = { from: startLedger, to: windowFloor - 1 };
-        logger.warn('Skipping ledger gap outside the live RPC window', {
-          skippedRange,
+        const skippedRange = { from: startLedger, to: windowFloor - 1 };
+        logger.warn('pollContract: skipping ledger gap outside RPC window', {
+          contractId: contract.contractId,
+          ...skippedRange,
           windowFloor,
-          networkLatest: networkLatestLedger,
         });
-        startLedger = windowFloor;
-        // Persist the reset so future polls don't re-request the stale range.
-        const resetState = await prisma.syncState.update({
-          where: { id: 1 },
+        await persistLedgerGap(skippedRange.from, skippedRange.to, 'rpc_window_skip');
+        await prisma.trackedContract.update({
+          where: { id: contract.id },
           data: { lastLedger: windowFloor - 1, lastLedgerHash: null },
         });
-
-        syncState = resetState;
-
-        // Persist gap so the repair worker can back-fill the skipped range.
-        await persistLedgerGap(skippedRange.from, skippedRange.to, 'rpc_window_skip');
+        startLedger = windowFloor;
       }
-      // Cap how many ledgers we process per cycle to bound catch-up batch size.
-      const batchEndLedger = Math.min(networkLatestLedger, startLedger + config.maxLedgersPerCycle - 1);
-      const decodedEvents = await collectMarketplaceEvents(server, contractIds, startLedger, batchEndLedger);
+
+      const batchEndLedger = Math.min(
+        networkLatestLedger,
+        startLedger + config.maxLedgersPerCycle - 1
+      );
+
+      const decodedEvents = await collectMarketplaceEvents(
+        server,
+        [contract.contractId],
+        startLedger,
+        batchEndLedger
+      );
 
       let latestHash: string | null = null;
-      if (decodedEvents.length > 0) {
-        const maxLedger = Math.max(...decodedEvents.map((event) => event.ledgerSequence));
+      const advanceTo =
+        decodedEvents.length > 0
+          ? Math.max(...decodedEvents.map((e) => e.ledgerSequence))
+          : batchEndLedger > contract.lastLedger
+          ? batchEndLedger
+          : null;
+
+      if (advanceTo !== null) {
         try {
           const ledgersRes = await server.getLedgers({
-            startLedger: maxLedger,
+            startLedger: advanceTo,
             pagination: { limit: 1 },
           });
           if (ledgersRes.ledgers && ledgersRes.ledgers.length > 0) {
             latestHash = ledgersRes.ledgers[0].hash;
           }
         } catch (err) {
-          logger.error('Failed to fetch hash for ledger', { ledger: maxLedger, err });
+          logger.error('pollContract: failed to fetch ledger hash', {
+            contractId: contract.contractId,
+            ledger: advanceTo,
+            err,
+          });
         }
 
-        const { updatedState, newEvents } = await prisma.$transaction(async (tx) => {
-          const toInsert = await applyDecodedEvents(decodedEvents, tx);
-          const updated = await tx.syncState.update({
-            where: { id: 1 },
-            data: buildSyncStateLedgerData(maxLedger, latestHash),
+        if (decodedEvents.length > 0) {
+          const { newEvents } = await prisma.$transaction(async (tx) => {
+            const toInsert = await applyDecodedEvents(decodedEvents, tx);
+            // Keep the shared SyncState in sync with the most-advanced contract
+            await tx.syncState.upsert({
+              where: { id: 1 },
+              create: { id: 1, lastLedger: advanceTo, lastLedgerHash: latestHash },
+              update: buildSyncStateLedgerData(advanceTo, latestHash),
+            });
+            return { newEvents: toInsert };
           });
-
-          return { updatedState: updated, newEvents: toInsert };
-        });
-
-        updateSyncMetrics(updatedState.lastLedger, networkLatestLedger);
-        recordProgress();
-
-        for (const ev of newEvents) emitSSEEvent(ev);
-      } else if (batchEndLedger > syncState.lastLedger) {
-        try {
-          const ledgersRes = await server.getLedgers({
-            startLedger: batchEndLedger,
-            pagination: { limit: 1 },
-          });
-          if (ledgersRes.ledgers && ledgersRes.ledgers.length > 0) {
-            latestHash = ledgersRes.ledgers[0].hash;
-          }
-        } catch (err) {
-          console.error(`Failed to fetch hash for ledger ${batchEndLedger}:`, err);
+          for (const ev of newEvents) emitSSEEvent(ev);
         }
 
-        const updatedState = await prisma.syncState.update({
-          where: { id: 1 },
-          data: buildSyncStateLedgerData(batchEndLedger, latestHash),
+        const syncData = buildSyncStateLedgerData(advanceTo, latestHash);
+        await prisma.trackedContract.update({
+          where: { id: contract.id },
+          data: {
+            lastLedger: syncData.lastLedger,
+            ...(syncData.lastLedgerHash ? { lastLedgerHash: syncData.lastLedgerHash } : {}),
+          },
         });
 
-        updateSyncMetrics(updatedState.lastLedger, networkLatestLedger);
+        latestLedgerProcessedGauge.set(advanceTo);
+        syncLatencyGauge.set(Math.max(0, networkLatestLedger - advanceTo));
         recordProgress();
       } else {
-        updateSyncMetrics(syncState.lastLedger, networkLatestLedger);
+        latestLedgerProcessedGauge.set(contract.lastLedger);
+        syncLatencyGauge.set(Math.max(0, networkLatestLedger - contract.lastLedger));
       }
 
-      consecutiveErrors = 0;
+      localErrors = 0;
     } catch (error) {
-      consecutiveErrors += 1;
-      const backoff = Math.min(
-        BASE_BACKOFF_MS * Math.pow(2, consecutiveErrors - 1),
-        MAX_BACKOFF_MS
-      );
-      logger.error('Error in polling loop', {
-        consecutiveErrors,
+      localErrors += 1;
+      const backoff = Math.min(BASE_BACKOFF_MS * Math.pow(2, localErrors - 1), MAX_BACKOFF_MS);
+      logger.error('pollContract: error in loop', {
+        contractId: contractRow.contractId,
+        localErrors,
         backoffMs: backoff,
         err: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
       });
       await new Promise((resolve) => setTimeout(resolve, backoff));
       continue;
     }
 
-    consecutiveErrors = 0;
+    localErrors = 0;
     await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
   }
+}
+
+export async function startPolling() {
+  const config = loadConfig();
+
+  const activeContracts = await seedTrackedContracts();
+  if (activeContracts.length === 0) {
+    throw new Error('No active tracked contracts found. Set TRACKED_CONTRACTS or MARKETPLACE_CONTRACT_ID.');
+  }
+
+  logger.info('startPolling: launching per-contract pollers', {
+    contracts: activeContracts.map((c) => ({
+      contractId: c.contractId,
+      label: c.label,
+      type: c.type,
+    })),
+    pollIntervalMs: config.pollIntervalMs,
+    maxLedgersPerCycle: config.maxLedgersPerCycle,
+  });
+
+  // Run one loop per contract concurrently; propagate first fatal failure
+  await Promise.all(
+    activeContracts.map((contract) =>
+      pollContract(
+        {
+          id: contract.id,
+          contractId: contract.contractId,
+          lastLedger: contract.lastLedger,
+          lastLedgerHash: contract.lastLedgerHash,
+        },
+        config
+      )
+    )
+  );
 
   if (shuttingDown) {
     await gracefulShutdown();
   }
 }
+
 
 async function fetchListingFromChain(_listingId: bigint): Promise<any | null> {
   return null;
@@ -438,6 +525,7 @@ export async function applyDecodedEvents(decodedEvents: any[], tx: any) {
         data: event.data,
         ledgerSequence: event.ledgerSequence,
         eventHash,
+        contractId: event.contractId ?? '',
       },
     });
 
@@ -462,6 +550,7 @@ export async function processEvent(event: any, tx?: any, skipInsert = false) {
         ledgerSequence,
         data,
         eventHash: event.eventHash ?? '',
+        contractId: event.contractId ?? '',
       },
     });
   }
