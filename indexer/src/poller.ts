@@ -10,6 +10,7 @@ import {
 import { recordProgress } from './stall.js';
 import { collectMarketplaceEvents, MAX_LEDGER_WINDOW } from './event-sync.js';
 import { withRetry } from './retry.js';
+import { logger } from './logger.js';
 import redis from './redis.js';
 import { loadConfig } from './config.js';
 

@@ -11,6 +11,7 @@ import { metricsMiddleware, handleMetrics } from './metrics.js';
 import { errorHandler } from './api/errors.js';
 import { startReconciler } from './reconciler.js';
 import { validateRequiredEnv } from './config.js';
+import { startStatsScheduler } from './stats-scheduler.js';
 import prisma from './db.js';
 
 dotenv.config();
@@ -119,6 +120,10 @@ const httpServer = app.listen(PORT, () => {
     startReconciler().catch((err) => {
         console.error('[Reconciler] Failed to start:', err);
     });
+
+    // Start the hourly materialized-view refresh for analytics stats
+    const stopStatsScheduler = startStatsScheduler();
+    registerShutdownHook(async () => { stopStatsScheduler(); });
 });
 
 // Register HTTP server and SSE cleanup so gracefulShutdown() in poller closes them too.

@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import prisma from '../db.js';
 import redis from '../redis.js';
 import { cacheMiddleware } from './cache-middleware.js';
+import { etagMiddleware } from './etag-middleware.js';
 import { strictRateLimiter } from './rate-limit-middleware.js';
 import { badRequest, notFound, internalError } from './errors.js';
 import {
@@ -12,7 +13,16 @@ import {
   walletActivityQuerySchema,
   collectionsQuerySchema,
   statsQuerySchema,
+  statsOverviewQuerySchema,
+  statsDailyQuerySchema,
+  statsTopQuerySchema,
 } from './query-schemas.js';
+import {
+  getOverviewStats,
+  getDailyStats,
+  getTopCollections,
+  getTopArtists,
+} from '../stats.js';
 
 // ── SSE registry ───────────────────────────────────────────────────────────────
 
@@ -40,8 +50,7 @@ export function _resetSseState() {
   sseClients.clear();
 }
 
-// SSE clients registry
-const sseClients: Response[] = [];
+// SSE clients registry — keyed by Response, value is last-seen event ID
 
 export function emitSSEEvent(event: any) {
   const id = nextSseId();
@@ -63,10 +72,10 @@ export function emitSSEEvent(event: any) {
 }
 
 export function closeSSEClients(): void {
-    for (const client of sseClients) {
+    for (const [client] of sseClients) {
         try { client.end(); } catch { /* ignore */ }
     }
-    sseClients.length = 0;
+    sseClients.clear();
 }
 
 const router = Router();
@@ -190,12 +199,22 @@ router.get('/listings/:id/history', async (req: Request, res: Response, next: Ne
   if (!/^\d+$/.test(id)) {
     return next(badRequest('Invalid ID format'));
   }
+
+  const limit  = Math.min(parseInt(String(req.query.limit  ?? '100'), 10) || 100, 500);
+  const offset = Math.min(parseInt(String(req.query.offset ?? '0'),   10) || 0,   10000);
+
   try {
-    const results = await prisma.marketplaceEvent.findMany({
-      where: { listingId: BigInt(id) },
-      orderBy: { ledgerSequence: 'asc' },
-    });
-    res.json(serialize(results));
+    const where = { listingId: BigInt(id) };
+    const [results, total] = await Promise.all([
+      prisma.marketplaceEvent.findMany({
+        where,
+        orderBy: { ledgerSequence: 'asc' },
+        take: limit,
+        skip: offset,
+      }),
+      prisma.marketplaceEvent.count({ where }),
+    ]);
+    res.json({ events: serialize(results), total });
   } catch (err) {
     next(internalError('Failed to fetch listing history'));
   }
@@ -562,6 +581,84 @@ router.get('/artists/:address/metrics', cacheMiddleware(60), async (req: Request
     });
   } catch (err) {
     next(internalError('Failed to fetch artist metrics'));
+  }
+});
+
+// ── GET /stats/overview ───────────────────────────────────────────────────────
+
+const STATS_CACHE_TTL = 300; // 5 minutes
+
+router.get('/stats/overview', validateQuery(statsOverviewQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await getCached('stats:overview', STATS_CACHE_TTL, getOverviewStats);
+    res.json(serialize(result));
+  } catch (err) {
+    next(internalError('Failed to fetch overview stats'));
+  }
+});
+
+// ── GET /stats/daily ──────────────────────────────────────────────────────────
+
+const MAX_DAILY_RANGE_DAYS = 365;
+const MAX_DAILY_QUERY_DAYS = 90;
+
+router.get('/stats/daily', validateQuery(statsDailyQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { from, to } = (req as any).validatedQuery;
+
+  const fromDate = new Date(from as string);
+  const toDate = new Date(to as string);
+
+  if (isNaN(fromDate.getTime())) {
+    return next(badRequest('Invalid `from` date — use ISO 8601 format (e.g. 2024-01-01)'));
+  }
+  if (isNaN(toDate.getTime())) {
+    return next(badRequest('Invalid `to` date — use ISO 8601 format (e.g. 2024-03-31)'));
+  }
+  if (fromDate > toDate) {
+    return next(badRequest('`from` must be before `to`'));
+  }
+
+  const diffDays = Math.ceil((toDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays > MAX_DAILY_RANGE_DAYS) {
+    return next(badRequest(`Date range exceeds maximum of ${MAX_DAILY_RANGE_DAYS} days`));
+  }
+
+  try {
+    const cacheKey = `stats:daily:${from}:${to}`;
+    const result = await getCached(cacheKey, STATS_CACHE_TTL, () =>
+      getDailyStats(fromDate, toDate)
+    );
+    res.json(serialize(result));
+  } catch (err) {
+    next(internalError('Failed to fetch daily stats'));
+  }
+});
+
+// ── GET /stats/top-collections ────────────────────────────────────────────────
+
+router.get('/stats/top-collections', validateQuery(statsTopQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { limit } = (req as any).validatedQuery;
+  const take = Math.min(limit ?? 10, 100);
+  try {
+    const cacheKey = `stats:top-collections:${take}`;
+    const result = await getCached(cacheKey, STATS_CACHE_TTL, () => getTopCollections(take));
+    res.json(serialize(result));
+  } catch (err) {
+    next(internalError('Failed to fetch top collections'));
+  }
+});
+
+// ── GET /stats/top-artists ────────────────────────────────────────────────────
+
+router.get('/stats/top-artists', validateQuery(statsTopQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { limit } = (req as any).validatedQuery;
+  const take = Math.min(limit ?? 10, 100);
+  try {
+    const cacheKey = `stats:top-artists:${take}`;
+    const result = await getCached(cacheKey, STATS_CACHE_TTL, () => getTopArtists(take));
+    res.json(serialize(result));
+  } catch (err) {
+    next(internalError('Failed to fetch top artists'));
   }
 });
 
