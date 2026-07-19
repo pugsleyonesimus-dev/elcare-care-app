@@ -13,6 +13,7 @@ For the threat surface these procedures address, see [THREAT_MODEL.md](THREAT_MO
 2. [Admin key rotation](#2-admin-key-rotation)
 3. [Indexer recovery from re-org](#3-indexer-recovery-from-re-org)
 4. [Compromised secret rotation](#4-compromised-secret-rotation)
+5. [Keeper subsystem operations](#5-keeper-subsystem-operations)
 
 ---
 
@@ -228,3 +229,251 @@ For the deployer key (used only at deploy time):
 - [ ] Secrets rotated where applicable
 - [ ] Public disclosure prepared (coordinated with reporter, if external)
 - [ ] Runbook updated with any new learnings
+
+---
+
+## 5. Keeper subsystem operations
+
+The keeper is a background process that calls three permissionless maintenance entry-points on
+the marketplace contract on behalf of the platform:
+
+| Entry point        | When called                                              | Auth required |
+|--------------------|----------------------------------------------------------|---------------|
+| `expire_listing`   | Listing `expires_at` ≤ current ledger timestamp          | None          |
+| `finalize_auction` | Auction `end_time` ≤ current ledger timestamp            | `caller.require_auth()` (keeper account) |
+| `reclaim_offer`    | Offer `expires_at` ≤ current ledger timestamp            | None          |
+
+### 5.1 Key provisioning
+
+Generate a dedicated Stellar keypair for the keeper. **Never reuse the admin key.**
+
+```bash
+# Generate a new keypair
+stellar keys generate keeper-account --network testnet
+
+# Show the public key (fund this address)
+stellar keys public-key keeper-account
+
+# Export the secret key (store in your secrets manager, not in .env files in git)
+stellar keys secret-key keeper-account
+```
+
+Fund the keeper account with enough XLM to cover the configured daily budget plus a safety
+margin.  At the default settings (max 1 XLM/day), a balance of 10–20 XLM gives comfortable
+runway.  The account requires a minimum reserve of 1 XLM.
+
+```bash
+# On testnet, use Friendbot
+curl "https://friendbot.stellar.org?addr=$(stellar keys public-key keeper-account)"
+
+# On mainnet, send XLM from your operations wallet
+stellar payment --source ops-account --destination <KEEPER_PUBLIC_KEY> --amount 20
+```
+
+### 5.2 Configuration
+
+Set the following environment variables in your deployment (Railway / Kubernetes secret /
+`.env`).  See `indexer/.env.example` for the full list with defaults.
+
+| Variable | Required | Description |
+|---|---|---|
+| `KEEPER_ENABLED` | Yes (to activate) | Set `true` to start the keeper loop |
+| `KEEPER_SECRET` | Yes | Stellar secret key (`S...`) for the keeper account |
+| `KEEPER_DRY_RUN` | No (default `true`) | Set `false` to broadcast real transactions |
+| `KEEPER_INTERVAL_MS` | No (60000) | Sweep interval in milliseconds |
+| `KEEPER_MAX_ACTIONS_PER_CYCLE` | No (20) | Cap per cycle to bound fee exposure |
+| `KEEPER_MAX_FEE_STROOPS` | No (1000000) | Per-tx fee hard cap (~0.1 XLM) |
+| `KEEPER_DAILY_FEE_BUDGET_STROOPS` | No (10000000) | Daily halt budget (~1 XLM) |
+| `KEEPER_FEE_BUMP_MULTIPLIER` | No (1.5) | Fee escalation factor per bump |
+| `KEEPER_FEE_BUMP_MAX_RETRIES` | No (3) | Max fee-bump attempts before marking Failed |
+| `KEEPER_POLL_TIMEOUT_MS` | No (60000) | Timeout before triggering a fee-bump |
+
+**Always start with `KEEPER_DRY_RUN=true`** and confirm the keeper is discovering the right
+candidates (check `/keeper/status` and the Prometheus metrics) before switching to live mode.
+
+### 5.3 Enabling the keeper
+
+**Embedded mode** (runs inside the main indexer process):
+
+```bash
+# .env
+KEEPER_ENABLED=true
+KEEPER_SECRET=<secret>
+KEEPER_DRY_RUN=false
+
+# Restart the indexer
+docker compose restart indexer
+```
+
+**Standalone mode** (one-shot, useful for cron or Lambda):
+
+```bash
+KEEPER_ENABLED=true KEEPER_SECRET=<secret> KEEPER_DRY_RUN=false \
+  npx tsx indexer/src/keeper/index.ts
+```
+
+The standalone entrypoint exits with code 0 if all actions succeeded or were skipped, and
+code 1 if any actions failed.
+
+### 5.4 Monitoring and alerting
+
+**Health check:**
+
+```bash
+curl http://localhost:4000/keeper/status
+```
+
+Response fields:
+
+```jsonc
+{
+  "running": true,          // keeper loop is active
+  "dryRun": false,          // live mode
+  "enabled": true,
+  "actionCounts": {         // cumulative DB counts by status
+    "Pending": 0,
+    "Submitted": 2,
+    "Succeeded": 41,
+    "Failed": 1,
+    "Skipped": 3
+  },
+  "lastCycle": {
+    "startedAt": "...",
+    "completedAt": "...",
+    "candidatesDiscovered": 5,
+    "actionsAttempted": 5,
+    "actionsSucceeded": 4,
+    "actionsFailed": 1,
+    "actionsSkipped": 0,
+    "feesSpentStroops": "4200",
+    "budgetExhausted": false,
+    "dryRun": false
+  },
+  "recentActions": [ ... ]
+}
+```
+
+**Prometheus metrics** (scraped at `/metrics`):
+
+| Metric | Alert threshold |
+|---|---|
+| `keeper_actions_total{outcome="failed"}` | Rate > 0 over 5 min |
+| `keeper_budget_exhausted` | Gauge == 1 |
+| `keeper_simulation_failures_total` | Rate > 5/min |
+| `keeper_fee_bumps_total` | Rate > 2/min (fee pressure) |
+| `keeper_cycle_duration_seconds` | p95 > 60s |
+
+### 5.5 Failure triage
+
+**Scenario: Actions stuck in `Failed` status**
+
+```bash
+# Inspect the lastError field for recent failures
+curl http://localhost:4000/keeper/status | jq '.recentActions[] | select(.status=="Failed")'
+
+# Or query the DB directly
+psql "$DATABASE_URL" -c "
+  SELECT id, \"targetType\", \"targetId\", attempts, \"lastError\", \"updatedAt\"
+  FROM \"KeeperAction\"
+  WHERE status = 'Failed'
+  ORDER BY \"updatedAt\" DESC LIMIT 20;
+"
+```
+
+Common causes and remedies:
+
+| `lastError` pattern | Cause | Fix |
+|---|---|---|
+| `tx_bad_seq` | Sequence collision (concurrent keeper instance or restart race) | Ensure only one keeper instance runs; actions will auto-retry next cycle |
+| `insufficient resource fee` | Soroban resource cost increased | Raise `KEEPER_MAX_FEE_STROOPS` |
+| `ECONNREFUSED` / `timeout` | RPC node unreliable | Check `STELLAR_RPC_URL`; switch to a backup node |
+| `fee-bump cap reached` | Persistent network congestion | Raise `KEEPER_FEE_BUMP_MAX_RETRIES` and `KEEPER_MAX_FEE_STROOPS` |
+
+To allow Failed actions to retry, reset them to Pending:
+
+```sql
+-- Reset all Failed actions to Pending (they will be retried next cycle)
+UPDATE "KeeperAction" SET status = 'Pending', "txHash" = NULL, "lastError" = NULL
+WHERE status = 'Failed';
+```
+
+**Scenario: Daily fee budget exhausted (`keeper_budget_exhausted = 1`)**
+
+The keeper halts automatically when the daily budget is spent.  Investigate before raising the
+budget — a sudden spike in fees usually signals network congestion or a configuration error.
+
+```bash
+# Check how much was spent today
+psql "$DATABASE_URL" -c "
+  SELECT SUM(\"feePaid\") AS total_stroops
+  FROM \"KeeperAction\"
+  WHERE status = 'Succeeded'
+    AND \"updatedAt\" >= CURRENT_DATE;
+"
+```
+
+To restore operation today (after verifying the root cause):
+
+```bash
+# Raise the daily budget temporarily
+KEEPER_DAILY_FEE_BUDGET_STROOPS=50000000 docker compose restart indexer
+```
+
+The in-process budget counter resets on restart, so restarting the indexer effectively resets
+the daily budget.  Use this only after confirming fees are within expected bounds.
+
+**Scenario: Actions stuck in `Submitted` status after a crash**
+
+On the next cycle the keeper automatically polls `getTransaction` for any `Submitted` row and
+advances it to `Succeeded` or `Failed`.  No manual intervention is needed unless the tx has
+been in `Submitted` for more than ~10 minutes (indicating the tx was dropped by the network).
+
+If a tx was dropped:
+
+```sql
+-- Force the action back to Pending so it is resubmitted
+UPDATE "KeeperAction" SET status = 'Pending', "txHash" = NULL
+WHERE status = 'Submitted' AND "updatedAt" < NOW() - INTERVAL '15 minutes';
+```
+
+**Scenario: `Skipped` actions you expected to succeed**
+
+A `Skipped` status means the contract returned a permanent error (e.g. `ListingNotExpired`)
+at simulation time — the keeper's assumption was wrong.  This is not a keeper bug; it means the
+on-chain state changed between discovery and execution (e.g. the listing was cancelled by the
+owner before the keeper could expire it).  `Skipped` rows are terminal and are never re-queued.
+
+If a `Skipped` row is wrong (e.g. the listing really is expired), check:
+1. That `KEEPER_DRY_RUN=false` — in dry-run mode actions are counted as Succeeded without a DB transition to Submitted.
+2. That the keeper account's clock matches the network — ledger timestamps, not wall clock, govern expiry.
+
+### 5.6 KEEPER_SECRET rotation
+
+Rotate the keeper key if it is suspected compromised:
+
+```bash
+# 1. Generate replacement keypair and fund it
+stellar keys generate keeper-account-v2 --network testnet
+curl "https://friendbot.stellar.org?addr=$(stellar keys public-key keeper-account-v2)"
+
+# 2. Update KEEPER_SECRET in your secrets manager to the new secret key
+
+# 3. Restart the indexer / keeper process
+docker compose restart indexer
+
+# 4. Verify the new key is being used
+curl http://localhost:4000/keeper/status
+```
+
+The old key does not need to be explicitly revoked on-chain because the keeper entry-points
+(`expire_listing`, `reclaim_offer`) are permissionless, and `finalize_auction` only requires
+`caller.require_auth()` — any funded keypair can call it.  Simply stop using the old key.
+
+Transfer any remaining XLM from the old account to the new one:
+
+```bash
+stellar payment \
+  --source keeper-account-old \
+  --destination $(stellar keys public-key keeper-account-v2) \
+  --amount <remaining_balance_minus_reserve>
+```

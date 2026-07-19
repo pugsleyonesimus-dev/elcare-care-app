@@ -53,27 +53,12 @@ export const statsQuerySchema = z.object({
   to:    z.string().optional(),
 });
 
-// ── Analytics dashboard schemas ───────────────────────────────────────────────
-
-// ISO 8601 date string validator (YYYY-MM-DD or full ISO timestamp)
-const isoDateString = z
-  .string()
-  .refine((s) => !isNaN(Date.parse(s)), {
-    message: 'Must be a valid ISO 8601 date string',
-  });
-
-export const statsOverviewQuerySchema = z.object({});
-
-export const statsDailyQuerySchema = z.object({
-  from: isoDateString,
-  to:   isoDateString,
+export const syncGapsQuerySchema = z.object({
+  status: z.enum(['Open', 'Repairing', 'Repaired', 'Failed']).optional(),
+  source: z.enum(['rpc_window_skip', 'reorg', 'manual']).optional(),
+  limit:  positiveInt(500).optional(),
+  offset: positiveInt(10_000).optional(),
 });
-
-export const statsTopQuerySchema = z.object({
-  limit: z.coerce.number().int().positive().max(100).optional(),
-});
-
-// ── Middleware factory ────────────────────────────────────────────────────────
 
 export function validateQuery<T extends z.ZodTypeAny>(schema: T) {
   return (req: Request, _res: Response, next: NextFunction) => {

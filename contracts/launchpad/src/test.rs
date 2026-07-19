@@ -1326,7 +1326,10 @@ fn fee_stored_in_collection_record_for_all_types() {
         &500u32,
         &BytesN::from_array(&env, &[0xE3u8; 32]),
     );
-    assert_eq!(client.get_collection(&addr_721).unwrap().platform_fee_bps, 500u32);
+    assert_eq!(
+        client.get_collection(&addr_721).unwrap().platform_fee_bps,
+        500u32
+    );
 
     let addr_1155 = client.deploy_normal_1155(
         &creator,
@@ -1337,7 +1340,10 @@ fn fee_stored_in_collection_record_for_all_types() {
         &750u32,
         &BytesN::from_array(&env, &[0xE4u8; 32]),
     );
-    assert_eq!(client.get_collection(&addr_1155).unwrap().platform_fee_bps, 750u32);
+    assert_eq!(
+        client.get_collection(&addr_1155).unwrap().platform_fee_bps,
+        750u32
+    );
 
     let addr_l721 = client.deploy_lazy_721(
         &creator,
@@ -1351,7 +1357,10 @@ fn fee_stored_in_collection_record_for_all_types() {
         &100u32,
         &BytesN::from_array(&env, &[0xE5u8; 32]),
     );
-    assert_eq!(client.get_collection(&addr_l721).unwrap().platform_fee_bps, 100u32);
+    assert_eq!(
+        client.get_collection(&addr_l721).unwrap().platform_fee_bps,
+        100u32
+    );
 
     let addr_l1155 = client.deploy_lazy_1155(
         &creator,
@@ -1363,7 +1372,10 @@ fn fee_stored_in_collection_record_for_all_types() {
         &200u32,
         &BytesN::from_array(&env, &[0xE6u8; 32]),
     );
-    assert_eq!(client.get_collection(&addr_l1155).unwrap().platform_fee_bps, 200u32);
+    assert_eq!(
+        client.get_collection(&addr_l1155).unwrap().platform_fee_bps,
+        200u32
+    );
 }
 
 /// Invalid fee rejected for all 4 deploy function variants.

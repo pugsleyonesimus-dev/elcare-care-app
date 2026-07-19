@@ -14,23 +14,21 @@ use crate::{
     storage::{
         acquire_auction_lock, acquire_listing_lock, add_artist_auction_id, add_artist_listing_id,
         add_to_active_listings, append_bid_record, clear_pending_admin_storage,
-        get_active_listing_ids, get_artist_auction_ids, get_artist_listing_ids,
-        get_auction_count, get_listing_count, get_pending_admin_storage,
+        get_active_listing_ids, get_artist_auction_ids, get_artist_listing_ids, get_auction_count,
+        get_auction_extension_trigger_storage, get_auction_extension_window_storage,
+        get_listing_count, get_max_price_storage, get_min_price_storage, get_pending_admin_storage,
         increment_auction_count, increment_listing_count, increment_offer_count,
-        is_artist_revoked_storage, load_auction, load_auction_bids, load_listing,
-        load_listing_offers, load_offer, load_offerer_offers, release_auction_lock,
+        is_artist_revoked_storage, is_migration_done, load_auction, load_auction_bids,
+        load_listing, load_listing_offers, load_offer, load_offerer_offers, release_auction_lock,
         release_listing_lock, remove_artist_revocation_storage, remove_from_active_listings,
         save_auction, save_listing, save_listing_offers, save_offer, save_offerer_offers,
-        set_artist_revocation_storage, set_pending_admin_storage,
-        get_auction_extension_window_storage, get_auction_extension_trigger_storage,
-        set_auction_extension_window_storage, set_auction_extension_trigger_storage,
-        get_min_price_storage, get_max_price_storage,
-        set_min_price_storage, set_max_price_storage,
-        is_migration_done, set_migration_done,
+        set_artist_revocation_storage, set_auction_extension_trigger_storage,
+        set_auction_extension_window_storage, set_max_price_storage, set_migration_done,
+        set_min_price_storage, set_pending_admin_storage,
     },
     types::{
-        Auction, AuctionStatus, BidRecord, CancelReason, Listing, ListingStatus,
-        MarketplaceError, Offer, OfferStatus, Recipient,
+        Auction, AuctionStatus, BidRecord, CancelReason, Listing, ListingStatus, MarketplaceError,
+        Offer, OfferStatus, Recipient,
     },
 };
 
@@ -224,10 +222,7 @@ impl MarketplaceContract {
     /// A value of `None` means the corresponding bound has not been configured
     /// and is treated permissively (no limit in that direction).
     pub fn get_price_bounds(env: Env) -> (Option<i128>, Option<i128>) {
-        (
-            get_min_price_storage(&env),
-            get_max_price_storage(&env),
-        )
+        (get_min_price_storage(&env), get_max_price_storage(&env))
     }
 
     pub fn set_treasury(env: Env, admin: Address, treasury: Address) {
@@ -494,8 +489,7 @@ impl MarketplaceContract {
 
         // Snapshot the current protocol fee so the combined bps can be validated
         // and the listing's economic terms are fixed at creation time.
-        let protocol_fee_bps =
-            crate::storage::get_protocol_fee_bps_storage(&env).unwrap_or(0);
+        let protocol_fee_bps = crate::storage::get_protocol_fee_bps_storage(&env).unwrap_or(0);
 
         // Reject if sum(recipient bps) + protocol_fee_bps > 10 000.
         // This must happen before persisting the listing so an invalid split
@@ -944,14 +938,13 @@ impl MarketplaceContract {
             .unwrap_or(DEFAULT_MIN_BID_INCREMENT);
         // Snapshot the anti-sniping parameters so the auction's extension
         // behaviour is determined at creation, not by future admin changes.
-        let extension_window = get_auction_extension_window_storage(&env)
-            .unwrap_or(DEFAULT_EXTENSION_WINDOW);
-        let extension_trigger = get_auction_extension_trigger_storage(&env)
-            .unwrap_or(DEFAULT_EXTENSION_TRIGGER);
+        let extension_window =
+            get_auction_extension_window_storage(&env).unwrap_or(DEFAULT_EXTENSION_WINDOW);
+        let extension_trigger =
+            get_auction_extension_trigger_storage(&env).unwrap_or(DEFAULT_EXTENSION_TRIGGER);
         // Snapshot the global protocol fee so settlement math is fixed at
         // creation time — consistent with how listings work (ISSUE-005 parity).
-        let protocol_fee_bps =
-            crate::storage::get_protocol_fee_bps_storage(&env).unwrap_or(0);
+        let protocol_fee_bps = crate::storage::get_protocol_fee_bps_storage(&env).unwrap_or(0);
         let auction = Auction {
             auction_id,
             creator: creator.clone(),
@@ -1783,11 +1776,7 @@ impl MarketplaceContract {
     /// # Invariants checked
     /// * `recipients` must be non-empty (caller responsibility to guard with `InvalidSplit`).
     /// * `sum(r.percentage) + protocol_fee_bps <= 10_000`
-    fn validate_recipients(
-        env: &Env,
-        recipients: &Vec<Recipient>,
-        protocol_fee_bps: u32,
-    ) {
+    fn validate_recipients(env: &Env, recipients: &Vec<Recipient>, protocol_fee_bps: u32) {
         let len = recipients.len();
         let mut total_bps: u32 = 0;
         for i in 0..len {

@@ -15,9 +15,7 @@ import {
   walletActivityQuerySchema,
   collectionsQuerySchema,
   statsQuerySchema,
-  statsOverviewQuerySchema,
-  statsDailyQuerySchema,
-  statsTopQuerySchema,
+  syncGapsQuerySchema,
 } from './query-schemas.js';
 import {
   getOverviewStats,
@@ -586,124 +584,149 @@ router.get('/artists/:address/metrics', cacheMiddleware(60), async (req: Request
   }
 });
 
-// ── GET /stats/overview ───────────────────────────────────────────────────────
+// ── GET /keeper/status ────────────────────────────────────────────────────────
+//
+// Returns the keeper's current operational state:
+//   - whether it is running and in dry-run mode
+//   - aggregate counts by KeeperActionStatus
+//   - the most recent 20 actions (for quick operator triage)
+//   - stats from the last completed cycle
 
-const STATS_CACHE_TTL = 300; // 5 minutes
-
-router.get('/stats/overview', validateQuery(statsOverviewQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+router.get('/keeper/status', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const result = await getCached('stats:overview', STATS_CACHE_TTL, getOverviewStats);
-    res.json(serialize(result));
+    // Lazy-import to avoid a hard dependency when the keeper is disabled.
+    const { getLastCycleStats, isKeeperRunning } = await import('../keeper/index.js');
+    const { getActionSummary, getRecentActions } = await import('../keeper/idempotency.js');
+
+    const [summary, recent, lastCycle] = await Promise.all([
+      getActionSummary(),
+      getRecentActions(20),
+      Promise.resolve(getLastCycleStats()),
+    ]);
+
+    const payload = {
+      running:       isKeeperRunning(),
+      dryRun:        process.env.KEEPER_DRY_RUN !== 'false',
+      enabled:       process.env.KEEPER_ENABLED === 'true',
+      actionCounts:  summary,
+      lastCycle: lastCycle
+        ? {
+            startedAt:            lastCycle.startedAt,
+            completedAt:          lastCycle.completedAt,
+            candidatesDiscovered: lastCycle.candidatesDiscovered,
+            actionsAttempted:     lastCycle.actionsAttempted,
+            actionsSucceeded:     lastCycle.actionsSucceeded,
+            actionsFailed:        lastCycle.actionsFailed,
+            actionsSkipped:       lastCycle.actionsSkipped,
+            feesSpentStroops:     lastCycle.feesSpentStroops.toString(),
+            budgetExhausted:      lastCycle.budgetExhausted,
+            dryRun:               lastCycle.dryRun,
+          }
+        : null,
+      recentActions: serialize(recent),
+    };
+
+    res.json(payload);
   } catch (err) {
-    next(internalError('Failed to fetch overview stats'));
+    next(internalError('Failed to fetch keeper status'));
   }
 });
 
-// ── GET /stats/daily ──────────────────────────────────────────────────────────
+// ── GET /sync/gaps ────────────────────────────────────────────────────────────
+//
+// Returns ledger gaps with optional filtering by status/source.
+// Also includes a summary of open gaps and total missing ledgers.
 
-const MAX_DAILY_RANGE_DAYS = 365;
-const MAX_DAILY_QUERY_DAYS = 90;
-
-router.get('/stats/daily', validateQuery(statsDailyQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
-  const { from, to } = (req as any).validatedQuery;
-
-  const fromDate = new Date(from as string);
-  const toDate = new Date(to as string);
-
-  if (isNaN(fromDate.getTime())) {
-    return next(badRequest('Invalid `from` date — use ISO 8601 format (e.g. 2024-01-01)'));
-  }
-  if (isNaN(toDate.getTime())) {
-    return next(badRequest('Invalid `to` date — use ISO 8601 format (e.g. 2024-03-31)'));
-  }
-  if (fromDate > toDate) {
-    return next(badRequest('`from` must be before `to`'));
-  }
-
-  const diffDays = Math.ceil((toDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24));
-  if (diffDays > MAX_DAILY_RANGE_DAYS) {
-    return next(badRequest(`Date range exceeds maximum of ${MAX_DAILY_RANGE_DAYS} days`));
-  }
-
+router.get('/sync/gaps', validateQuery(syncGapsQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const { status, source, limit, offset } = (req as any).validatedQuery;
   try {
-    const cacheKey = `stats:daily:${from}:${to}`;
-    const result = await getCached(cacheKey, STATS_CACHE_TTL, () =>
-      getDailyStats(fromDate, toDate)
-    );
-    res.json(serialize(result));
-  } catch (err) {
-    next(internalError('Failed to fetch daily stats'));
-  }
-});
+    const where: any = {};
+    if (status) where.status = status;
+    if (source) where.source = source;
 
-// ── GET /stats/top-collections ────────────────────────────────────────────────
+    const take = limit ?? 50;
+    const skip = offset ?? 0;
 
-router.get('/stats/top-collections', validateQuery(statsTopQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
-  const { limit } = (req as any).validatedQuery;
-  const take = Math.min(limit ?? 10, 100);
-  try {
-    const cacheKey = `stats:top-collections:${take}`;
-    const result = await getCached(cacheKey, STATS_CACHE_TTL, () => getTopCollections(take));
-    res.json(serialize(result));
-  } catch (err) {
-    next(internalError('Failed to fetch top collections'));
-  }
-});
+    const [gaps, total, openSummary] = await Promise.all([
+      prisma.ledgerGap.findMany({
+        where,
+        orderBy: { createdAt: 'asc' },
+        take,
+        skip,
+        include: { repairJob: { select: { id: true, status: true, checkpointLedger: true, totalInserted: true } } },
+      }),
+      prisma.ledgerGap.count({ where }),
+      prisma.ledgerGap.findMany({
+        where: { status: 'Open' },
+        select: { fromLedger: true, toLedger: true },
+      }),
+    ]);
 
-// ── GET /stats/top-artists ────────────────────────────────────────────────────
-
-router.get('/stats/top-artists', validateQuery(statsTopQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
-  const { limit } = (req as any).validatedQuery;
-  const take = Math.min(limit ?? 10, 100);
-  try {
-    const cacheKey = `stats:top-artists:${take}`;
-    const result = await getCached(cacheKey, STATS_CACHE_TTL, () => getTopArtists(take));
-    res.json(serialize(result));
-  } catch (err) {
-    next(internalError('Failed to fetch top artists'));
-  }
-});
-
-// ── POST /admin/reprocess-ledger/:sequence ────────────────────────────────────
-// Re-fetches and re-processes all contract events for a specific ledger.
-// Safe to call multiple times — idempotent via eventHash deduplication.
-
-const RPC_URL = process.env.STELLAR_RPC_URL || 'https://soroban-testnet.stellar.org';
-
-router.post('/admin/reprocess-ledger/:sequence', strictRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
-  const seq = req.params.sequence;
-  if (!/^\d+$/.test(seq)) {
-    return next(badRequest('sequence must be a positive integer'));
-  }
-  const ledger = parseInt(seq, 10);
-
-  try {
-    const contractIds = [
-      process.env.MARKETPLACE_CONTRACT_ID,
-      process.env.LAUNCHPAD_CONTRACT_ID,
-    ].filter(Boolean) as string[];
-
-    if (contractIds.length === 0) {
-      return next(badRequest('No contract IDs configured'));
-    }
-
-    const { rpc } = await import('@stellar/stellar-sdk');
-    const server = new rpc.Server(RPC_URL);
-
-    const events = await collectMarketplaceEvents(server, contractIds, ledger, ledger);
-
-    const inserted = await prisma.$transaction((tx: Parameters<typeof applyDecodedEvents>[1]) =>
-      applyDecodedEvents(events, tx)
+    const openLedgers = openSummary.reduce(
+      (acc, g) => acc + (g.toLedger - g.fromLedger + 1), 0,
     );
 
     res.json({
-      ledger,
-      fetched: events.length,
-      inserted: inserted.length,
-      duplicatesSkipped: events.length - inserted.length,
+      summary: {
+        openGaps:    openSummary.length,
+        openLedgers,
+      },
+      total,
+      gaps: serialize(gaps),
     });
   } catch (err) {
-    next(internalError('Failed to reprocess ledger'));
+    next(internalError('Failed to fetch sync gaps'));
+  }
+});
+
+// ── GET /sync/gaps/:id ────────────────────────────────────────────────────────
+
+router.get('/sync/gaps/:id', async (req: Request, res: Response, next: NextFunction) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return next(badRequest('Gap ID must be an integer'));
+  try {
+    const gap = await prisma.ledgerGap.findUnique({
+      where: { id },
+      include: { repairJob: true },
+    });
+    if (!gap) return next(notFound('Gap not found'));
+    res.json(serialize(gap));
+  } catch (err) {
+    next(internalError('Failed to fetch gap'));
+  }
+});
+
+// ── GET /sync/jobs ────────────────────────────────────────────────────────────
+//
+// BackfillJob listing for operator visibility.
+
+router.get('/sync/jobs', async (req: Request, res: Response, next: NextFunction) => {
+  const status = req.query.status as string | undefined;
+  try {
+    const where: any = {};
+    if (status) where.status = status;
+    const jobs = await prisma.backfillJob.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+    res.json(serialize(jobs));
+  } catch (err) {
+    next(internalError('Failed to fetch backfill jobs'));
+  }
+});
+
+// ── GET /sync/jobs/:id ────────────────────────────────────────────────────────
+
+router.get('/sync/jobs/:id', async (req: Request, res: Response, next: NextFunction) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return next(badRequest('Job ID must be an integer'));
+  try {
+    const job = await prisma.backfillJob.findUnique({ where: { id } });
+    if (!job) return next(notFound('BackfillJob not found'));
+    res.json(serialize(job));
+  } catch (err) {
+    next(internalError('Failed to fetch backfill job'));
   }
 });
 
