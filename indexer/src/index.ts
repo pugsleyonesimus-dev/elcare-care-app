@@ -3,7 +3,6 @@ import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import dotenv from 'dotenv';
-import rateLimit from 'express-rate-limit';
 import routes, { closeSSEClients } from './api/routes.js';
 import { startPolling, registerShutdownHook } from './poller.js';
 import { rateLimiter } from './api/rate-limit-middleware.js';
@@ -15,19 +14,13 @@ import { startKeeper } from './keeper/index.js';
 import { startGapRepairWorker } from './gap-repair.js';
 import { logger } from './logger.js';
 import prisma from './db.js';
+import docsRouter from './api/docs-router.js';
 
 dotenv.config();
 
 // Initialise Sentry before the Express app is constructed so it can instrument
 // framework integrations automatically. No-op when SENTRY_DSN is not set.
 initSentry();
-
-// Load OpenAPI spec
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const openapiPath = path.join(__dirname, '..', 'openapi.yaml');
-const openapiFile = fs.readFileSync(openapiPath, 'utf8');
-const swaggerDoc = yaml.parse(openapiFile);
 
 // Fail fast — refuse to start if any required environment variable is missing.
 try {
@@ -61,6 +54,9 @@ app.get('/metrics', handleMetrics);
 
 // Apply standard rate limiting for fallback
 app.use(rateLimiter);
+
+// OpenAPI spec + Swagger UI (no rate-limit — static/read-only)
+app.use('/', docsRouter);
 
 // API Routes
 app.use('/', routes);

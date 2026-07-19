@@ -1,330 +1,925 @@
 openapi: 3.0.0
 info:
   title: ElcareHub Indexer API
-  description: Off-chain event indexer for the ElcareHub NFT marketplace on Stellar Soroban
+  description: Off-chain event indexer and REST API for the ElcareHub NFT
+    marketplace on Stellar Soroban. All BigInt values (IDs, endTime) are
+    serialised as decimal strings.
   version: 1.0.0
-
+  contact:
+    name: ElcareHub
+    url: https://elcarehub.io
 servers:
   - url: http://localhost:4000
     description: Local development
   - url: https://indexer.elcarehub.io
     description: Production
-
+components:
+  schemas:
+    Listing:
+      type: object
+      properties:
+        listingId:
+          type: string
+          example: "1"
+          description: Unique listing ID
+        artist:
+          type: string
+          example: GABC...XYZ
+          description: Seller / artist Stellar address
+        owner:
+          type: string
+          nullable: true
+          example: GABC...XYZ
+          description: Current owner address, null before first sale
+        price:
+          type: string
+          example: "10.0000000"
+          description: Listing price as a decimal string (7 dp)
+        currency:
+          type: string
+          example: XLM
+        collection:
+          type: string
+          example: CABC...DEF
+          description: Collection contract address
+        nftTokenId:
+          type: string
+          example: "1"
+          description: NFT token ID within the collection
+        token:
+          type: string
+          example: CABC...DEF
+          description: Payment token contract address
+        status:
+          type: string
+          enum:
+            - Active
+            - Sold
+            - Cancelled
+            - Auction
+          example: Active
+        recipients:
+          nullable: true
+          description: Royalty recipients (JSON)
+        createdAtLedger:
+          type: integer
+          example: 50000000
+          description: Ledger sequence when the listing was created
+        updatedAtLedger:
+          type: integer
+          example: 50000001
+          description: Ledger sequence of the last state change
+        createdAt:
+          type: string
+          format: date-time
+          example: 2024-01-15T12:00:00.000Z
+          description: Wall-clock creation time
+        updatedAt:
+          type: string
+          format: date-time
+          example: 2024-01-15T12:00:00.000Z
+          description: Wall-clock last-update time
+      required:
+        - listingId
+        - artist
+        - owner
+        - price
+        - currency
+        - collection
+        - nftTokenId
+        - token
+        - status
+        - createdAtLedger
+        - updatedAtLedger
+        - createdAt
+        - updatedAt
+    Auction:
+      type: object
+      properties:
+        auctionId:
+          type: string
+          example: "1"
+          description: Unique auction ID
+        creator:
+          type: string
+          example: GABC...XYZ
+          description: Auction creator Stellar address
+        collection:
+          type: string
+          example: CABC...DEF
+        nftTokenId:
+          type: string
+          example: "1"
+        token:
+          type: string
+          example: CABC...DEF
+          description: Payment token contract address
+        reservePrice:
+          type: string
+          example: "5.0000000"
+          description: Minimum acceptable bid
+        highestBid:
+          type: string
+          example: "7.5000000"
+          description: Current highest bid amount
+        highestBidder:
+          type: string
+          nullable: true
+          example: GABC...XYZ
+          description: Address of the current highest bidder
+        endTime:
+          type: string
+          example: "1"
+          description: Auction end time as Unix timestamp string
+        status:
+          type: string
+          enum:
+            - Active
+            - Finalized
+            - Cancelled
+          example: Active
+        recipients:
+          nullable: true
+          description: Royalty recipients (JSON)
+        createdAtLedger:
+          type: integer
+          example: 50000000
+        updatedAtLedger:
+          type: integer
+          example: 50000001
+        createdAt:
+          type: string
+          format: date-time
+          example: 2024-01-15T12:00:00.000Z
+        updatedAt:
+          type: string
+          format: date-time
+          example: 2024-01-15T12:00:00.000Z
+      required:
+        - auctionId
+        - creator
+        - collection
+        - nftTokenId
+        - token
+        - reservePrice
+        - highestBid
+        - highestBidder
+        - endTime
+        - status
+        - createdAtLedger
+        - updatedAtLedger
+        - createdAt
+        - updatedAt
+    Offer:
+      type: object
+      properties:
+        offerId:
+          type: string
+          example: "1"
+          description: Unique offer ID
+        listingId:
+          type: string
+          example: "1"
+          description: Listing this offer targets
+        offerer:
+          type: string
+          example: GABC...XYZ
+          description: Address that placed the offer
+        amount:
+          type: string
+          example: "8.0000000"
+          description: Offered amount as a decimal string
+        token:
+          type: string
+          example: CABC...DEF
+          description: Payment token contract address
+        status:
+          type: string
+          enum:
+            - Pending
+            - Accepted
+            - Rejected
+            - Withdrawn
+          example: Pending
+        createdAtLedger:
+          type: integer
+          example: 50000000
+        updatedAtLedger:
+          type: integer
+          example: 50000001
+        createdAt:
+          type: string
+          format: date-time
+          example: 2024-01-15T12:00:00.000Z
+        updatedAt:
+          type: string
+          format: date-time
+          example: 2024-01-15T12:00:00.000Z
+      required:
+        - offerId
+        - listingId
+        - offerer
+        - amount
+        - token
+        - status
+        - createdAtLedger
+        - updatedAtLedger
+        - createdAt
+        - updatedAt
+    MarketplaceEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+          description: Auto-increment PK
+        listingId:
+          type: string
+          nullable: true
+          example: "1"
+          description: Related listing ID, if applicable
+        eventType:
+          type: string
+          example: ARTWORK_SOLD
+          description: Contract event type (e.g. LISTING_CREATED, ARTWORK_SOLD, BID_PLACED)
+        actor:
+          type: string
+          example: GABC...XYZ
+          description: Primary address that triggered the event
+        data:
+          type: object
+          additionalProperties:
+            nullable: true
+          description: Raw decoded event payload (varies by eventType)
+        ledgerSequence:
+          type: integer
+          example: 50000001
+        ledgerTimestamp:
+          type: string
+          format: date-time
+          example: 2024-01-15T12:00:00.000Z
+          description: Ledger close time
+      required:
+        - id
+        - listingId
+        - eventType
+        - actor
+        - data
+        - ledgerSequence
+        - ledgerTimestamp
+    Collection:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        contractAddress:
+          type: string
+          example: CABC...DEF
+          description: Deployed collection contract address
+        kind:
+          type: string
+          example: normal_721
+          description: "Collection type: normal_721 | normal_1155 | lazy_721 | lazy_1155"
+        creator:
+          type: string
+          example: GABC...XYZ
+        name:
+          type: string
+          nullable: true
+          example: My NFT Collection
+        symbol:
+          type: string
+          nullable: true
+          example: MNC
+        deployedAtLedger:
+          type: integer
+          example: 50000000
+        createdAt:
+          type: string
+          format: date-time
+          example: 2024-01-15T12:00:00.000Z
+      required:
+        - id
+        - contractAddress
+        - kind
+        - creator
+        - name
+        - symbol
+        - deployedAtLedger
+        - createdAt
+    RoyaltyStats:
+      type: object
+      properties:
+        totalEarned:
+          type: string
+          example: "12.3456789"
+          description: Total royalty earnings as a decimal string (7 dp)
+        payoutCount:
+          type: integer
+          example: 5
+          description: Number of secondary sales that generated royalties
+        lastPayout:
+          type: integer
+          example: 1705320000000
+          description: Unix timestamp (ms) of the most recent royalty payout, 0 if none
+      required:
+        - totalEarned
+        - payoutCount
+        - lastPayout
+    Stats:
+      type: object
+      properties:
+        totalListings:
+          type: integer
+          example: 1000
+        activeListings:
+          type: integer
+          example: 250
+        totalVolume:
+          type: string
+          example: "50000.0000000"
+          description: Cumulative sold volume as a decimal string
+        activeUsers:
+          type: integer
+          example: 100
+          description: Distinct actors in the requested time window
+        totalEvents:
+          type: integer
+          example: 5000
+        totalSales:
+          type: integer
+          example: 300
+        timeRange:
+          type: object
+          properties:
+            from:
+              type: string
+              nullable: true
+              format: date-time
+            to:
+              type: string
+              nullable: true
+              format: date-time
+          required:
+            - from
+            - to
+          description: Echoed back when a time filter was applied
+      required:
+        - totalListings
+        - activeListings
+        - totalVolume
+        - activeUsers
+        - totalEvents
+        - totalSales
+    ArtistMetrics:
+      type: object
+      properties:
+        address:
+          type: string
+          example: GABC...XYZ
+        range:
+          type: string
+          example: week
+          description: Time window used ("all" when no range param was given)
+        totalListings:
+          type: integer
+          example: 50
+        totalSales:
+          type: integer
+          example: 20
+        totalVolume:
+          type: string
+          example: "200.0000000"
+        uniqueBuyers:
+          type: integer
+          example: 15
+        conversionRate:
+          type: number
+          example: 0.4
+          description: Sales / listings ratio (0 – 1)
+        salesTimeline:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                example: 2024-01-15
+              count:
+                type: integer
+                example: 3
+            required:
+              - date
+              - count
+          description: Daily sales counts for the time window
+      required:
+        - address
+        - range
+        - totalListings
+        - totalSales
+        - totalVolume
+        - uniqueBuyers
+        - conversionRate
+        - salesTimeline
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: NOT_FOUND
+            message:
+              type: string
+              example: Listing not found
+          required:
+            - code
+            - message
+      required:
+        - error
+  parameters: {}
 paths:
   /listings:
     get:
-      summary: Get all listings
-      tags: [Listings]
+      tags:
+        - Listings
+      summary: List all listings
+      description: Returns listings with optional filters. When `limit` or `offset`
+        are supplied the response wraps results in a pagination envelope.
       parameters:
-        - name: artist
-          in: query
-          schema:
+        - schema:
             type: string
-          description: Filter by artist address
-        - name: owner
+            description: Filter by artist Stellar address
+          required: false
+          description: Filter by artist Stellar address
+          name: artist
           in: query
-          schema:
+        - schema:
             type: string
+            description: Filter by current owner address
+          required: false
           description: Filter by current owner address
-        - name: status
+          name: owner
           in: query
-          schema:
+        - schema:
             type: string
-            enum: [Active, Sold, Cancelled]
+            enum:
+              - Active
+              - Sold
+              - Cancelled
+              - Auction
+            description: Filter by listing status
+          required: false
           description: Filter by listing status
-        - name: minPrice
+          name: status
           in: query
-          schema:
+        - schema:
             type: string
-          description: Minimum price filter
-        - name: maxPrice
+            description: Full-text search on artist address or collection
+          required: false
+          description: Full-text search on artist address or collection
+          name: search
           in: query
-          schema:
-            type: string
-          description: Maximum price filter
-        - name: search
+        - schema:
+            type: number
+            nullable: true
+            minimum: 0
+            description: Minimum price (inclusive)
+          required: false
+          description: Minimum price (inclusive)
+          name: minPrice
           in: query
-          schema:
-            type: string
-          description: Search by artist address or collection
-        - name: limit
+        - schema:
+            type: number
+            nullable: true
+            minimum: 0
+            description: Maximum price (inclusive)
+          required: false
+          description: Maximum price (inclusive)
+          name: maxPrice
           in: query
-          schema:
+        - schema:
             type: integer
+            nullable: true
+            minimum: 0
             maximum: 1000
-          description: Number of results to return
-        - name: offset
+            description: Max results to return (max 1000)
+          required: false
+          description: Max results to return (max 1000)
+          name: limit
           in: query
-          schema:
+        - schema:
             type: integer
+            nullable: true
+            minimum: 0
+            maximum: 10000
+            description: Number of results to skip
+          required: false
           description: Number of results to skip
+          name: offset
+          in: query
       responses:
-        '200':
-          description: List of listings
+        "200":
+          description: Listing array, or paginated envelope when limit/offset are used
           content:
             application/json:
               schema:
-                oneOf:
+                anyOf:
                   - type: array
                     items:
-                      $ref: '#/components/schemas/Listing'
+                      $ref: "#/components/schemas/Listing"
                   - type: object
                     properties:
                       listings:
                         type: array
                         items:
-                          $ref: '#/components/schemas/Listing'
+                          $ref: "#/components/schemas/Listing"
                       total:
                         type: integer
-
+                    required:
+                      - listings
+                      - total
   /listings/{id}:
     get:
+      tags:
+        - Listings
       summary: Get a single listing
-      tags: [Listings]
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
+        - schema:
             type: string
+            description: Listing ID
+          required: true
+          description: Listing ID
+          name: id
+          in: path
       responses:
-        '200':
+        "200":
           description: Listing details
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Listing'
-        '404':
+                $ref: "#/components/schemas/Listing"
+        "404":
           description: Listing not found
-
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /listings/{id}/history:
     get:
-      summary: Get listing event history
-      tags: [Listings]
+      tags:
+        - Listings
+      summary: Get on-chain event history for a listing
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
+        - schema:
             type: string
+            description: Listing ID
+          required: true
+          description: Listing ID
+          name: id
+          in: path
       responses:
-        '200':
-          description: Event timeline
+        "200":
+          description: Ordered list of marketplace events for this listing
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/MarketplaceEvent'
-
+                  $ref: "#/components/schemas/MarketplaceEvent"
+        "400":
+          description: Invalid ID format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /auctions:
     get:
-      summary: Get all auctions
-      tags: [Auctions]
+      tags:
+        - Auctions
+      summary: List all auctions
       parameters:
-        - name: creator
-          in: query
-          schema:
+        - schema:
             type: string
-          description: Filter by auction creator address
-        - name: status
+            description: Filter by creator address
+          required: false
+          description: Filter by creator address
+          name: creator
           in: query
-          schema:
+        - schema:
             type: string
-            enum: [Active, Finalized, Cancelled]
+            enum:
+              - Active
+              - Finalized
+              - Cancelled
+            description: Filter by auction status
+          required: false
           description: Filter by auction status
+          name: status
+          in: query
       responses:
-        '200':
-          description: List of auctions
+        "200":
+          description: Auction list
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Auction'
-
+                  $ref: "#/components/schemas/Auction"
   /auctions/{id}:
     get:
+      tags:
+        - Auctions
       summary: Get a single auction
-      tags: [Auctions]
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
+        - schema:
             type: string
+            description: Auction ID
+          required: true
+          description: Auction ID
+          name: id
+          in: path
       responses:
-        '200':
+        "200":
           description: Auction details
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Auction'
-        '404':
+                $ref: "#/components/schemas/Auction"
+        "400":
+          description: Invalid ID format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
           description: Auction not found
-
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /offers:
     get:
-      summary: Get all offers
-      tags: [Offers]
+      tags:
+        - Offers
+      summary: List offers
+      description: Returns all offers. Use `listing_id` to filter to a specific listing.
       parameters:
-        - name: listing_id
-          in: query
-          schema:
+        - schema:
             type: string
-          description: Filter by listing ID
+            pattern: ^\d+$
+            description: Filter by listing ID (numeric string)
+          required: false
+          description: Filter by listing ID (numeric string)
+          name: listing_id
+          in: query
       responses:
-        '200':
-          description: List of offers
+        "200":
+          description: Offer list
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Offer'
-
+                  $ref: "#/components/schemas/Offer"
   /activity/recent:
     get:
-      summary: Get recent marketplace activity
-      tags: [Activity]
+      tags:
+        - Activity
+      summary: Get the 20 most recent marketplace events
+      description: Cached for 30 s. Returns the latest cross-marketplace activity feed.
       responses:
-        '200':
+        "200":
           description: Recent events
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/MarketplaceEvent'
-
+                  $ref: "#/components/schemas/MarketplaceEvent"
   /collections:
     get:
-      summary: Get all collections
-      tags: [Collections]
+      tags:
+        - Collections
+      summary: List all deployed collections
+      description: Cached for 60 s.
       parameters:
-        - name: kind
-          in: query
-          schema:
+        - schema:
             type: string
-            enum: [ERC721, ERC1155, LazyMintERC721, LazyMintERC1155]
-          description: Filter by collection type
-        - name: creator
+            description: Filter by collection type (normal_721, normal_1155, lazy_721,
+              lazy_1155)
+          required: false
+          description: Filter by collection type (normal_721, normal_1155, lazy_721,
+            lazy_1155)
+          name: kind
           in: query
-          schema:
+        - schema:
             type: string
+            description: Filter by creator address
+          required: false
           description: Filter by creator address
+          name: creator
+          in: query
       responses:
-        '200':
-          description: List of collections
+        "200":
+          description: Collection list
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Collection'
-
+                  $ref: "#/components/schemas/Collection"
   /creators/{address}/collections:
     get:
-      summary: Get collections by creator
-      tags: [Collections]
+      tags:
+        - Collections
+      summary: Get all collections deployed by a creator
       parameters:
-        - name: address
-          in: path
-          required: true
-          schema:
+        - schema:
             type: string
+            description: Creator Stellar address
+          required: true
+          description: Creator Stellar address
+          name: address
+          in: path
       responses:
-        '200':
+        "200":
           description: Collections by creator
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Collection'
-
+                  $ref: "#/components/schemas/Collection"
   /wallets/{address}/activity:
     get:
-      summary: Get wallet activity
-      tags: [Wallets]
+      tags:
+        - Wallets
+      summary: Get activity feed for a wallet
+      description: Returns events where the address is the `actor` or appears in the
+        event JSON payload (buyer, artist, offerer, bidder, winner, creator).
+        Rate-limited to 20 req/min.
       parameters:
-        - name: address
-          in: path
-          required: true
-          schema:
+        - schema:
             type: string
-        - name: limit
-          in: query
-          schema:
+            description: Wallet Stellar address
+          required: true
+          description: Wallet Stellar address
+          name: address
+          in: path
+        - schema:
             type: integer
+            nullable: true
+            minimum: 0
             maximum: 200
-            default: 50
+            description: Max results (default 50, max 200)
+          required: false
+          description: Max results (default 50, max 200)
+          name: limit
+          in: query
       responses:
-        '200':
-          description: Wallet events
+        "200":
+          description: Wallet event feed
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/MarketplaceEvent'
-
+                  $ref: "#/components/schemas/MarketplaceEvent"
   /wallets/{address}/royalty-stats:
     get:
-      summary: Get royalty earnings for an artist
-      tags: [Wallets]
+      tags:
+        - Wallets
+      summary: Get royalty earnings summary for an artist
+      description: Calculates total royalties earned from secondary sales.
+        Rate-limited to 20 req/min.
       parameters:
-        - name: address
-          in: path
-          required: true
-          schema:
+        - schema:
             type: string
+            description: Artist Stellar address
+          required: true
+          description: Artist Stellar address
+          name: address
+          in: path
       responses:
-        '200':
+        "200":
           description: Royalty statistics
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RoyaltyStats'
-
+                $ref: "#/components/schemas/RoyaltyStats"
   /stats:
     get:
+      tags:
+        - Stats
       summary: Get marketplace statistics
-      tags: [Stats]
+      description: Aggregate counts and volumes. Supports an optional time window via
+        `range` shorthand or explicit `from`/`to` ISO 8601 dates.
       parameters:
-        - name: from
+        - schema:
+            type: string
+            enum:
+              - day
+              - week
+              - month
+            description: Shorthand time window (last 24 h / 7 d / 30 d)
+          required: false
+          description: Shorthand time window (last 24 h / 7 d / 30 d)
+          name: range
           in: query
-          schema:
+        - schema:
             type: string
             format: date-time
-          description: Start date (ISO 8601)
-        - name: to
+            description: Window start (ISO 8601). Ignored when `range` is set.
+          required: false
+          description: Window start (ISO 8601). Ignored when `range` is set.
+          name: from
           in: query
-          schema:
+        - schema:
             type: string
             format: date-time
-          description: End date (ISO 8601)
-        - name: range
+            description: Window end (ISO 8601). Ignored when `range` is set.
+          required: false
+          description: Window end (ISO 8601). Ignored when `range` is set.
+          name: to
           in: query
-          schema:
-            type: string
-            enum: [day, week, month]
-          description: Shorthand time range
       responses:
-        '200':
+        "200":
           description: Marketplace statistics
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Stats'
-
+                $ref: "#/components/schemas/Stats"
+        "400":
+          description: Invalid date format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /artists/{address}/metrics:
+    get:
+      tags:
+        - Artists
+      summary: Get per-artist performance metrics
+      description: Returns sales volume, conversion rate, unique buyers, and a daily
+        sales timeline. Cached for 60 s.
+      parameters:
+        - schema:
+            type: string
+            description: Artist Stellar address
+          required: true
+          description: Artist Stellar address
+          name: address
+          in: path
+        - schema:
+            type: string
+            enum:
+              - day
+              - week
+              - month
+            description: "Time window (default: all time)"
+          required: false
+          description: "Time window (default: all time)"
+          name: range
+          in: query
+      responses:
+        "200":
+          description: Artist metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtistMetrics"
+  /events:
+    get:
+      tags:
+        - System
+      summary: Server-Sent Events stream
+      description: Real-time event stream using SSE. Supports `Last-Event-Id` header
+        for replay of up to the last 200 events. Returns 503 when the connection
+        limit is reached.
+      responses:
+        "200":
+          description: SSE stream (text/event-stream)
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "503":
+          description: Too many SSE connections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /health:
     get:
-      summary: Health check
-      tags: [System]
+      tags:
+        - System
+      summary: Liveness probe
       responses:
-        '200':
-          description: Service is healthy
+        "200":
+          description: Service is alive
           content:
             application/json:
               schema:
@@ -332,14 +927,19 @@ paths:
                 properties:
                   status:
                     type: string
-                    enum: [ok]
-
+                    enum:
+                      - ok
+                required:
+                  - status
   /readyz:
     get:
+      tags:
+        - System
       summary: Readiness probe
-      tags: [System]
+      description: Returns 503 until at least one ledger has been indexed, or if the
+        indexer has stalled.
       responses:
-        '200':
+        "200":
           description: Service is ready
           content:
             application/json:
@@ -348,11 +948,15 @@ paths:
                 properties:
                   status:
                     type: string
-                    enum: [ready]
+                    enum:
+                      - ready
                   lastLedger:
                     type: integer
-        '503':
-          description: Service is not ready
+                required:
+                  - status
+                  - lastLedger
+        "503":
+          description: Service is not ready or stalled
           content:
             application/json:
               schema:
@@ -360,7 +964,7 @@ paths:
                 properties:
                   status:
                     type: string
-                    enum: [not_ready]
+                    example: not_ready
                   reasons:
                     type: array
                     items:
@@ -467,11 +1071,14 @@ paths:
 
   /metrics:
     get:
+      tags:
+        - System
       summary: Prometheus metrics
-      tags: [System]
+      description: Exposes `http_request_duration_seconds`, `latest_ledger_processed`,
+        `network_latest_ledger`, and `sync_latency_ledgers` metrics.
       responses:
-        '200':
-          description: Prometheus-format metrics
+        "200":
+          description: Prometheus text format
           content:
             text/plain:
               schema:

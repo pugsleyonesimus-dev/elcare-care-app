@@ -258,7 +258,7 @@ jobs:
           REDIS_URL: redis://localhost:6379
 
   indexer:
-    name: Build and Test Indexer
+    name: Build and Test Indexer (${{ matrix.node-version }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -288,4 +288,37 @@ jobs:
         working-directory: indexer
       - name: Run Tests
         run: npm run test
+        working-directory: indexer
+
+  check-openapi:
+    name: Check OpenAPI Spec (Indexer)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Cache NPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: indexer/node_modules
+          key: ${{ runner.os }}-indexer-20-${{ hashFiles('indexer/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-indexer-20-
+      - name: Install Dependencies
+        run: npm ci
+        working-directory: indexer
+      - name: Generate OpenAPI spec
+        run: npm run generate-openapi
+        working-directory: indexer
+      - name: Diff against committed openapi.json
+        run: |
+          if ! git diff --exit-code openapi.json; then
+            echo ""
+            echo "ERROR: openapi.json is out of sync with the route definitions."
+            echo "Run 'npm run generate-openapi' in the indexer directory and commit the result."
+            exit 1
+          fi
         working-directory: indexer

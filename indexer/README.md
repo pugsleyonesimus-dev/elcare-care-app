@@ -21,6 +21,7 @@
 - [Getting Started](#getting-started)
 - [Environment Variables](#environment-variables)
 - [API Reference](#api-reference)
+- [API Documentation (Swagger UI)](#api-documentation-swagger-ui)
 - [Database Schema](#database-schema)
 - [Re-org Handling](#re-org-handling)
 - [Redis Caching](#redis-caching)
@@ -133,7 +134,31 @@ npm run backfill -- --start=123456 --end=124999 --rpc=https://your-archival-rpc
 
 ---
 
+## API Documentation (Swagger UI)
+
+The indexer ships a machine-readable OpenAPI 3.0 specification generated directly from the Zod route schemas.
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /docs` | Interactive Swagger UI (no external CDN — assets served from `swagger-ui-dist`) |
+| `GET /openapi.json` | Raw OpenAPI 3.0 JSON spec |
+
+### Keeping the spec in sync
+
+The spec is generated from `src/api/openapi.ts` and committed as `openapi.json`. A CI job (`Check OpenAPI Spec`) regenerates the spec on every PR and fails if the output differs from the committed file.
+
+To update the spec locally after changing routes:
+
+```bash
+npm run generate-openapi
+# then commit the updated openapi.json
+```
+
+---
+
 ## API Reference
+
+> **Prefer the interactive docs at `/docs`** for the canonical, always-up-to-date reference.
 
 Base URL: `http://localhost:4000`
 

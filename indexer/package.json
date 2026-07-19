@@ -16,13 +16,16 @@
     "migrate:status": "npx prisma migrate status",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.mts",
-    "lint": "npm run prisma:generate && tsc --noEmit"
+    "lint": "npm run prisma:generate && tsc --noEmit",
+    "generate-openapi": "tsx src/generate-openapi.ts",
+    "check-openapi": "tsx src/generate-openapi.ts && git diff --exit-code openapi.json || (echo 'ERROR: openapi.json is out of sync. Run npm run generate-openapi and commit the result.' && exit 1)"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@asteasolutions/zod-to-openapi": "^8.0.0",
     "@prisma/client": "^5.22.0",
     "@sentry/node": "^10.55.0",
     "@stellar/stellar-sdk": "^14.6.1",
